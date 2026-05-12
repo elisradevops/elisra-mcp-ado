@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - ".github/**"
+      - "docs/**"
+      - "*.md"
+
+jobs:
+  release:
+    name: Bump version & publish Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
+
+      - name: Bump version
+        id: bump
+        uses: phips28/gh-action-bump-version@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
+        with:
+          tag-prefix: "v"
+          commit-message: "CI: bumps version to {{version}} [skip ci]"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push MCP server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            elisradevops/elisra-mcp-ado:latest
+            elisradevops/elisra-mcp-ado:${{ steps.bump.outputs.newTag }}
+            elisradevops/elisra-mcp-ado:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push mcpo bridge image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/mcpo.Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            elisradevops/elisra-mcp-ado-mcpo:latest
+            elisradevops/elisra-mcp-ado-mcpo:${{ steps.bump.outputs.newTag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

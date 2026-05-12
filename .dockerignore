@@ -1,0 +1,14 @@
+node_modules
+dist
+coverage
+.env
+.env.local
+*.log
+.git
+.gitignore
+*.md
+tests
+docs
+vitest.config.ts
+eslint.config.js
+.vscode

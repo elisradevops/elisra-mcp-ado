@@ -1,0 +1,78 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# elisra-mcp-ado — Azure DevOps Server / TFS MCP server
+#
+# Two services:
+#   elisra-mcp-ado       — MCP server (stdio transport)
+#   elisra-mcp-ado-mcpo  — mcpo HTTP bridge for Open WebUI
+#
+# Quick start:
+#   cp .env.example .env && vi .env
+#   docker compose up -d
+#   # Then add http://localhost:9090 as a tool server in Open WebUI
+#
+# TLS: mount your corporate CA cert at the path set in NODE_EXTRA_CA_CERTS.
+#   mkdir -p ./certs && cp /path/to/ca.pem ./certs/elisra-ca.pem
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+  elisra-mcp-ado:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: elisradevops/elisra-mcp-ado:latest
+    container_name: elisra-mcp-ado
+    stdin_open: true
+    tty: false
+    restart: unless-stopped
+    environment:
+      ADO_ORG_URL: ${ADO_ORG_URL:?ADO_ORG_URL is required}
+      ADO_API_VERSION: ${ADO_API_VERSION:-7.0}
+      ADO_BATCH_SIZE: ${ADO_BATCH_SIZE:-200}
+      ADO_AUTH_MODE: ${ADO_AUTH_MODE:-per_request_pat}
+      ADO_READ_ONLY: "true"
+      ADO_ENABLE_DEBUG_OUTPUT: ${ADO_ENABLE_DEBUG_OUTPUT:-false}
+      ADO_REQUEST_TIMEOUT_MS: ${ADO_REQUEST_TIMEOUT_MS:-30000}
+      ADO_ALLOW_UNKNOWN_FIELDS: ${ADO_ALLOW_UNKNOWN_FIELDS:-false}
+      ADO_FULL_RESPONSE_MAX_ITEMS: ${ADO_FULL_RESPONSE_MAX_ITEMS:-50}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # NODE_EXTRA_CA_CERTS — path inside container; set if your TFS uses a corporate cert
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS:-}
+      # ADO_PAT — only needed when ADO_AUTH_MODE=server_pat
+      # ADO_PAT: ${ADO_PAT:-}
+    volumes:
+      # Mount your corporate CA cert (optional — required for on-prem TLS)
+      - ${HOST_CA_CERT_PATH:-/dev/null}:${NODE_EXTRA_CA_CERTS:-/etc/ssl/certs/elisra-ca.pem}:ro
+
+  # ─── mcpo HTTP bridge — wraps the stdio MCP server for Open WebUI ───────────
+  # mcpo spawns the MCP server as a subprocess.
+  # This image requires Node.js — we use our own built image as the base so
+  # mcpo can exec "node dist/index.js" directly.
+  #
+  # Alternative: if you prefer the upstream mcpo image, set it as a separate
+  # container and pass the command via docker exec (requires docker socket mount).
+  #
+  # Usage: add http://localhost:9090 as a tool server in Open WebUI settings.
+  elisra-mcp-ado-mcpo:
+    build:
+      context: .
+      dockerfile: docker/mcpo.Dockerfile
+    image: elisradevops/elisra-mcp-ado-mcpo:latest
+    container_name: elisra-mcp-ado-mcpo
+    restart: unless-stopped
+    ports:
+      - "${MCPO_PORT:-9090}:8000"
+    environment:
+      ADO_ORG_URL: ${ADO_ORG_URL:?ADO_ORG_URL is required}
+      ADO_API_VERSION: ${ADO_API_VERSION:-7.0}
+      ADO_BATCH_SIZE: ${ADO_BATCH_SIZE:-200}
+      ADO_AUTH_MODE: ${ADO_AUTH_MODE:-per_request_pat}
+      ADO_READ_ONLY: "true"
+      ADO_ENABLE_DEBUG_OUTPUT: ${ADO_ENABLE_DEBUG_OUTPUT:-false}
+      ADO_REQUEST_TIMEOUT_MS: ${ADO_REQUEST_TIMEOUT_MS:-30000}
+      ADO_ALLOW_UNKNOWN_FIELDS: ${ADO_ALLOW_UNKNOWN_FIELDS:-false}
+      ADO_FULL_RESPONSE_MAX_ITEMS: ${ADO_FULL_RESPONSE_MAX_ITEMS:-50}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS:-}
+      MCPO_API_KEY: ${MCPO_API_KEY:-changeme}
+    volumes:
+      - ${HOST_CA_CERT_PATH:-/dev/null}:${NODE_EXTRA_CA_CERTS:-/etc/ssl/certs/elisra-ca.pem}:ro

@@ -1,0 +1,204 @@
+import { z } from 'zod';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { ToolDeps } from './registerTools.js';
+import { resolveAuthContext } from '../../auth/authContext.js';
+import { safeJsonStringify } from '../../utils/safeJson.js';
+import type { ReviewScope } from '../../domain/reviewScope.js';
+import { groupByFields, COMPACT_FIELDS } from '../../services/workItemService.js';
+import { takeSampleIds } from '../../domain/responseModes.js';
+
+const OperatorEnum = z.enum(['=', '<>', 'IN', 'NOT IN', '<', '<=', '>', '>=', 'CONTAINS', 'UNDER', 'NOT UNDER']);
+
+const FieldFilterSchema = z.object({
+  field: z.string().describe('Field reference name (e.g. System.State, Custom.CustomerID)'),
+  operator: OperatorEnum,
+  value: z.union([
+    z.string(),
+    z.number(),
+    z.boolean(),
+    z.array(z.string()),
+    z.array(z.number()),
+  ]).describe('Scalar or array value. Use array only with IN / NOT IN.'),
+});
+
+const OrderBySchema = z.object({
+  field: z.string(),
+  direction: z.enum(['ASC', 'DESC']),
+});
+
+const SourceSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('wiql'),
+    wiql: z.string().describe('Raw WIQL query string'),
+  }),
+  z.object({
+    type: z.literal('ids'),
+    ids: z.array(z.number().int().positive()).min(1).describe('Work item IDs'),
+  }),
+  z.object({
+    type: z.literal('fieldFilters'),
+    filters: z.array(FieldFilterSchema).min(1).describe('Field filter conditions (ANDed together)'),
+    orderBy: z.array(OrderBySchema).optional(),
+  }),
+  z.object({
+    type: z.literal('linkedItems'),
+    rootId: z.number().int().positive().describe('Root work item ID to traverse from'),
+    relationTypes: z.array(z.string()).optional().describe(
+      'Relation type filter (e.g. System.LinkTypes.Hierarchy-Forward). Omit for all WI relation types.'
+    ),
+    depth: z.number().int().min(1).max(3).optional().default(1).describe(
+      'BFS depth. 1 = direct links only. Max 3.'
+    ),
+  }),
+  z.object({
+    type: z.literal('savedQuery'),
+    queryPathOrId: z.string().describe('Saved query path or GUID (not supported in v1)'),
+  }),
+]);
+
+export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
+  const { config, logger, wiqlClient, workItemService, reviewScopeResolver } = deps;
+
+  // ── ado_resolve_review_scope ────────────────────────────────────────────────
+
+  server.tool(
+    'ado_resolve_review_scope',
+    'Resolve a review scope (WIQL, IDs, field filters, or linked traversal) to a list of matching work item IDs. ' +
+    'Use this before calling review or context tools to confirm the scope is what you expect. ' +
+    'Default response mode is "overview" (counts only). Use responseMode="ids" for the full ID list.',
+    {
+      pat: z.string().optional().describe('Azure DevOps PAT.'),
+      project: z.string().optional().describe('Project name. Required for wiql and fieldFilters sources.'),
+      source: SourceSchema,
+      responseMode: z.enum(['overview', 'ids']).optional().default('overview'),
+      maxIds: z.number().int().positive().optional().default(500).describe('Cap on returned IDs in ids mode.'),
+    },
+    async ({ pat, project, source, responseMode, maxIds }) => {
+      const auth = resolveAuthContext(config, pat);
+      const scope: ReviewScope = { project, auth, source };
+
+      try {
+        const resolution = await reviewScopeResolver.resolve(scope);
+
+        const base = {
+          project: resolution.project,
+          sourceType: resolution.sourceType,
+          totalMatched: resolution.totalMatched,
+          warnings: resolution.warnings,
+          ...(resolution.debugWiql !== undefined ? { debugWiql: resolution.debugWiql } : {}),
+        };
+
+        if (responseMode === 'ids') {
+          const ids = maxIds ? resolution.ids.slice(0, maxIds) : resolution.ids;
+          return { content: [{ type: 'text' as const, text: safeJsonStringify({ ...base, ids }, 2) }] };
+        }
+
+        // overview: include sample IDs for drill-down
+        return {
+          content: [{
+            type: 'text' as const,
+            text: safeJsonStringify({
+              ...base,
+              sampleIds: takeSampleIds(resolution.ids),
+            }, 2),
+          }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn({ err }, 'ado_resolve_review_scope failed');
+        return { content: [{ type: 'text' as const, text: message }], isError: true };
+      }
+    }
+  );
+
+  // ── ado_query_work_item_ids ────────────────────────────────────────────────
+
+  server.tool(
+    'ado_query_work_item_ids',
+    'Execute a raw WIQL query and return only the matching work item IDs. ' +
+    'Use this when you have a known WIQL string. For field-filter-based queries, prefer ado_resolve_review_scope with source.type="fieldFilters".',
+    {
+      pat: z.string().optional().describe('Azure DevOps PAT.'),
+      project: z.string().describe('Project name. Required for WIQL execution.'),
+      wiql: z.string().describe('WIQL query string. Must SELECT [System.Id] FROM WorkItems.'),
+      top: z.number().int().positive().optional().describe('Cap on results returned by ADO (default: no cap).'),
+    },
+    async ({ pat, project, wiql, top }) => {
+      const auth = resolveAuthContext(config, pat);
+
+      try {
+        const result = await wiqlClient.execute({ project, wiql, auth, top });
+        logger.info({ project, totalMatched: result.totalMatched }, 'ado_query_work_item_ids succeeded');
+        return {
+          content: [{
+            type: 'text' as const,
+            text: safeJsonStringify({
+              project,
+              ids: result.ids,
+              totalMatched: result.totalMatched,
+              queryType: result.queryType,
+            }, 2),
+          }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn({ err }, 'ado_query_work_item_ids failed');
+        return { content: [{ type: 'text' as const, text: message }], isError: true };
+      }
+    }
+  );
+
+  // ── ado_get_review_scope_overview ─────────────────────────────────────────
+
+  server.tool(
+    'ado_get_review_scope_overview',
+    'Resolve a scope to IDs, fetch compact work item data, and return grouped counts. ' +
+    'Useful for understanding distribution (by state, type, area) before running a full review. ' +
+    'Default groupBy fields: System.WorkItemType and System.State.',
+    {
+      pat: z.string().optional().describe('Azure DevOps PAT.'),
+      project: z.string().optional().describe('Project name.'),
+      source: SourceSchema,
+      groupBy: z.array(z.string()).optional().default(['System.WorkItemType', 'System.State']).describe(
+        'Fields to group by. Must be in the compact field set or fetched fields.'
+      ),
+      maxItems: z.number().int().positive().optional().default(500).describe(
+        'Cap on work items to fetch for grouping.'
+      ),
+    },
+    async ({ pat, project, source, groupBy, maxItems }) => {
+      const auth = resolveAuthContext(config, pat);
+      const scope: ReviewScope = { project, auth, source };
+
+      try {
+        const resolution = await reviewScopeResolver.resolve(scope);
+
+        const ids = resolution.ids.slice(0, maxItems);
+        const fetchFields = [...new Set([...COMPACT_FIELDS, ...groupBy])];
+        const items = await workItemService.fetchMany(ids, auth, { fields: fetchFields });
+
+        const groups = groupByFields(items, groupBy);
+
+        logger.info({ totalMatched: resolution.totalMatched, fetched: items.length }, 'ado_get_review_scope_overview succeeded');
+        return {
+          content: [{
+            type: 'text' as const,
+            text: safeJsonStringify({
+              project: resolution.project,
+              sourceType: resolution.sourceType,
+              totalMatched: resolution.totalMatched,
+              fetched: items.length,
+              truncated: resolution.ids.length > maxItems,
+              groups,
+              warnings: resolution.warnings,
+            }, 2),
+          }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn({ err }, 'ado_get_review_scope_overview failed');
+        return { content: [{ type: 'text' as const, text: message }], isError: true };
+      }
+    }
+  );
+}
