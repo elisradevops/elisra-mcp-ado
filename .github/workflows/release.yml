@@ -3,10 +3,6 @@ name: Release
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - ".github/**"
-      - "docs/**"
-      - "*.md"
 
 concurrency:
   group: release-main
