@@ -28,6 +28,7 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   ADO_FULL_RESPONSE_MAX_ITEMS: z.coerce.number().int().min(1).default(50),
+  ADO_MAX_REVIEW_ITEMS: z.coerce.number().int().min(1).max(2000).default(500),
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
     .default('info'),
@@ -48,6 +49,7 @@ function mapToConfig(env: ParsedEnv): AppConfig {
     adoRequestTimeoutMs: env.ADO_REQUEST_TIMEOUT_MS,
     adoAllowUnknownFields: env.ADO_ALLOW_UNKNOWN_FIELDS,
     adoFullResponseMaxItems: env.ADO_FULL_RESPONSE_MAX_ITEMS,
+    adoMaxReviewItems: env.ADO_MAX_REVIEW_ITEMS,
     logLevel: env.LOG_LEVEL,
     mcpoApiKey: env.MCPO_API_KEY,
     adoPat: env.ADO_PAT,

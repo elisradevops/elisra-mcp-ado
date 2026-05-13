@@ -8,6 +8,7 @@ export interface AppConfig {
   adoRequestTimeoutMs: number;
   adoAllowUnknownFields: boolean;
   adoFullResponseMaxItems: number;
+  adoMaxReviewItems: number;
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
   mcpoApiKey?: string;
   adoPat?: string;
