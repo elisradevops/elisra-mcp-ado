@@ -299,3 +299,212 @@ describe('GenericWiqlCompiler — combined project + filters + orderBy', () => {
     expect(warnings).toHaveLength(0);
   });
 });
+
+describe('GenericWiqlCompiler — IS EMPTY / IS NOT EMPTY operators', () => {
+  it('emits IS EMPTY without a value token', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.Description', operator: 'IS EMPTY' }],
+    });
+    expect(wiql).toContain('[System.Description] IS EMPTY');
+    expect(wiql).not.toMatch(/IS EMPTY '/);
+  });
+
+  it('emits IS NOT EMPTY without a value token', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.Description', operator: 'IS NOT EMPTY' }],
+    });
+    expect(wiql).toContain('[System.Description] IS NOT EMPTY');
+  });
+
+  it('accepts IS EMPTY on identity field (find unassigned items)', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.AssignedTo', operator: 'IS EMPTY' }],
+      })
+    ).not.toThrow();
+  });
+
+  it('accepts IS EMPTY on string field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'Custom.CustomerID', operator: 'IS EMPTY' }],
+      })
+    ).not.toThrow();
+  });
+
+  it('rejects IS EMPTY on numeric field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'Microsoft.VSTS.Common.Priority', operator: 'IS EMPTY' }],
+      })
+    ).toThrow(/not valid for field/);
+  });
+
+  it('rejects IS EMPTY on TreePath field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.AreaPath', operator: 'IS EMPTY' }],
+      })
+    ).toThrow(/not valid for field/);
+  });
+
+  it('rejects other operators when value is missing', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.State', operator: '=' }],
+      })
+    ).toThrow(/requires a value/);
+  });
+});
+
+describe('GenericWiqlCompiler — DOES NOT CONTAIN / CONTAINS WORDS operators', () => {
+  it('compiles DOES NOT CONTAIN on string field', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.Title', operator: 'DOES NOT CONTAIN', value: 'shall' }],
+    });
+    expect(wiql).toContain("[System.Title] DOES NOT CONTAIN 'shall'");
+  });
+
+  it('compiles CONTAINS WORDS on html field', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.Description', operator: 'CONTAINS WORDS', value: 'fail-safe redundancy' }],
+    });
+    expect(wiql).toContain("[System.Description] CONTAINS WORDS 'fail-safe redundancy'");
+  });
+
+  it('compiles DOES NOT CONTAIN WORDS on html field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.Description', operator: 'DOES NOT CONTAIN WORDS', value: 'TBD' }],
+      })
+    ).not.toThrow();
+  });
+
+  it('rejects DOES NOT CONTAIN on numeric field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'Microsoft.VSTS.Common.Priority', operator: 'DOES NOT CONTAIN', value: '1' }],
+      })
+    ).toThrow(/not valid for field/);
+  });
+});
+
+describe('GenericWiqlCompiler — EVER / IN GROUP / NOT IN GROUP operators', () => {
+  it('compiles EVER on identity field', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.AssignedTo', operator: 'EVER', value: '@me' }],
+    });
+    expect(wiql).toContain('[System.AssignedTo] EVER @me');
+  });
+
+  it('compiles IN GROUP on identity field', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.AssignedTo', operator: 'IN GROUP', value: '[MyProject]\\Reviewers' }],
+    });
+    expect(wiql).toContain("[System.AssignedTo] IN GROUP '[MyProject]\\Reviewers'");
+  });
+
+  it('compiles NOT IN GROUP on identity field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.AssignedTo', operator: 'NOT IN GROUP', value: '[MyProject]\\Excluded' }],
+      })
+    ).not.toThrow();
+  });
+
+  it('rejects EVER on TreePath field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.AreaPath', operator: 'EVER', value: 'x' }],
+      })
+    ).toThrow(/not valid for field/);
+  });
+
+  it('rejects IN GROUP on numeric field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'Microsoft.VSTS.Common.Priority', operator: 'IN GROUP', value: 'some-group' }],
+      })
+    ).toThrow(/not valid for field/);
+  });
+});
+
+describe('GenericWiqlCompiler — WAS EVER operator', () => {
+  it('compiles WAS EVER on identity field', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.AssignedTo', operator: 'WAS EVER', value: '@me' }],
+    });
+    expect(wiql).toContain('[System.AssignedTo] WAS EVER @me');
+  });
+
+  it('accepts WAS EVER (case-insensitive input)', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.AssignedTo', operator: 'WAS EVER' as never, value: '@me' }],
+    });
+    expect(wiql).toContain('WAS EVER');
+  });
+
+  it('rejects WAS EVER on TreePath field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.AreaPath', operator: 'WAS EVER', value: 'x' }],
+      })
+    ).toThrow(/not valid for field/);
+  });
+});
+
+describe('GenericWiqlCompiler — field-to-field comparison', () => {
+  it('emits [Field] op [OtherField] for fieldRef value', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.ChangedDate', operator: '>', value: { fieldRef: 'System.CreatedDate' } }],
+    });
+    expect(wiql).toContain('[System.ChangedDate] > [System.CreatedDate]');
+  });
+
+  it('resolves case-insensitive fieldRef', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.ChangedDate', operator: '=', value: { fieldRef: 'system.createddate' } }],
+    });
+    expect(wiql).toContain('[System.ChangedDate] = [System.CreatedDate]');
+  });
+
+  it('rejects CONTAINS with fieldRef', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.Title', operator: 'CONTAINS', value: { fieldRef: 'System.Description' } }],
+      })
+    ).toThrow(/does not support field-to-field/);
+  });
+
+  it('rejects fieldRef with bracket injection', () => {
+    expect(() =>
+      compiler(true).compile({
+        filters: [{ field: 'System.ChangedDate', operator: '=', value: { fieldRef: 'Bad[Ref]Name' } }],
+      })
+    ).toThrow(/illegal bracket/);
+  });
+
+  it('rejects WAS EVER with fieldRef (non-comparison operator)', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.AssignedTo', operator: 'WAS EVER', value: { fieldRef: 'System.CreatedBy' } }],
+      })
+    ).toThrow(/does not support field-to-field/);
+  });
+
+  it('rejects empty fieldRef string', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.ChangedDate', operator: '=', value: { fieldRef: '' } }],
+      })
+    ).toThrow(/non-empty/);
+  });
+
+  it('rejects whitespace-only fieldRef string', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.ChangedDate', operator: '=', value: { fieldRef: '   ' } }],
+      })
+    ).toThrow(/non-empty/);
+  });
+});

@@ -2,6 +2,7 @@ import type { AppConfig } from '../config/config.js';
 import type { Logger } from '../logging/logger.js';
 import type { AuthContext } from '../auth/authContext.js';
 import type { IWiqlClient } from '../ado/wiqlClient.js';
+import type { IQueriesClient } from '../ado/queriesClient.js';
 import type { ReviewScope, ScopeResolution } from '../domain/reviewScope.js';
 import type { FieldFilter, OrderBy } from '../domain/fieldFilter.js';
 import type { WorkItemService } from './workItemService.js';
@@ -17,7 +18,8 @@ export class ReviewScopeResolver {
     private readonly wiqlClient: IWiqlClient,
     private readonly config: AppConfig,
     private readonly logger: Logger,
-    private readonly workItemService?: WorkItemService
+    private readonly workItemService?: WorkItemService,
+    private readonly queriesClient?: IQueriesClient
   ) {}
 
   async resolve(scope: ReviewScope, overrideAuth?: AuthContext): Promise<ScopeResolution> {
@@ -38,7 +40,7 @@ export class ReviewScopeResolver {
         return this.resolveLinkedItems(scope.project, source.rootId, source.relationTypes, source.depth, auth);
 
       case 'savedQuery':
-        throw notImplemented('savedQuery', 'not planned for v1');
+        return this.resolveSavedQuery(scope.project, source.queryPathOrId, auth);
     }
   }
 
@@ -145,6 +147,53 @@ export class ReviewScopeResolver {
     return resolution;
   }
 
+  // ─── SavedQuery source ───────────────────────────────────────────────────────
+
+  private async resolveSavedQuery(
+    project: string | undefined,
+    idOrPath: string,
+    auth: AuthContext
+  ): Promise<ScopeResolution> {
+    if (!project) {
+      throw projectRequired('savedQuery');
+    }
+    if (!this.queriesClient) {
+      throw new AdoScopeError(
+        'savedQuery source requires QueriesClient to be injected into ReviewScopeResolver.',
+        'CONFIGURATION_ERROR'
+      );
+    }
+
+    this.logger.debug({ project, idOrPath }, 'Resolving savedQuery scope');
+
+    const queryDef = await this.queriesClient.getQueryById(auth, project, idOrPath);
+
+    if (queryDef.queryType !== 'flat') {
+      throw new AdoScopeError(
+        `Saved query "${queryDef.name}" is a "${queryDef.queryType}" query. ` +
+        `Only flat queries are supported via savedQuery source. ` +
+        `Use source.type="wiql" for link/tree queries.`,
+        'UNSUPPORTED_QUERY_TYPE'
+      );
+    }
+
+    const result = await this.wiqlClient.execute({ project, wiql: queryDef.wiql, auth });
+
+    const resolution: ScopeResolution = {
+      project,
+      sourceType: 'savedQuery',
+      ids: result.ids,
+      totalMatched: result.totalMatched,
+      warnings: [],
+    };
+
+    if (this.config.adoEnableDebugOutput) {
+      resolution.debugWiql = queryDef.wiql;
+    }
+
+    return resolution;
+  }
+
   // ─── LinkedItems source ──────────────────────────────────────────────────────
 
   private async resolveLinkedItems(
@@ -236,13 +285,6 @@ function projectRequired(sourceType: string): AdoScopeError {
     `A project name is required for source type "${sourceType}". ` +
     `Provide it via the "project" field in the scope.`,
     'PROJECT_REQUIRED'
-  );
-}
-
-function notImplemented(sourceType: string, phase: string): AdoScopeError {
-  return new AdoScopeError(
-    `Source type "${sourceType}" is not implemented in this version (planned for ${phase}).`,
-    'NOT_IMPLEMENTED'
   );
 }
 

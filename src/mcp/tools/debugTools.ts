@@ -3,8 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './registerTools.js';
 import { safeJsonStringify } from '../../utils/safeJson.js';
 import { createDefaultCompiler } from '../../domain/genericWiqlCompiler.js';
-
-const OperatorEnum = z.enum(['=', '<>', 'IN', 'NOT IN', '<', '<=', '>', '>=', 'CONTAINS', 'UNDER', 'NOT UNDER']);
+import { FieldFilterSchema } from './scopeTools.js';
 
 /**
  * Register debug tools. Only called when ADO_ENABLE_DEBUG_OUTPUT=true.
@@ -24,11 +23,7 @@ export function registerDebugTools(server: McpServer, deps: ToolDeps): void {
     'Use to inspect the generated WIQL before running a full scope query.',
     {
       project: z.string().describe('Project name. Injected into the WIQL [System.TeamProject] clause.'),
-      filters: z.array(z.object({
-        field: z.string(),
-        operator: OperatorEnum,
-        value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.array(z.number())]),
-      })).min(1).describe('Field filter conditions (ANDed together).'),
+      filters: z.array(FieldFilterSchema).min(1).describe('Field filter conditions (ANDed together).'),
       orderBy: z.array(z.object({
         field: z.string(),
         direction: z.enum(['ASC', 'DESC']),

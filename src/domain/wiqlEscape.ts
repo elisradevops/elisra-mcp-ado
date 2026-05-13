@@ -3,6 +3,43 @@ const MAX_WIQL_STRING_LENGTH = 4000;
 // Control chars except \t (0x09), \n (0x0A), \r (0x0D)
 const CONTROL_CHAR_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/;
 
+// ─── Macro allow-list ─────────────────────────────────────────────────────────
+
+const VALID_MACRO_NAMES = new Set([
+  'me', 'today', 'project', 'currentiteration',
+  'startofday', 'startofweek', 'startofmonth', 'startofyear',
+  'follows', 'myrecentactivity', 'teamareas', 'recentmentions', 'recentprojectactivity',
+]);
+
+// Matches: @Name, @Name('arg'), @Name ± N[d|w|mo|y] (digits capped at 4 to block absurd offsets)
+const MACRO_RE = /^@([A-Za-z][A-Za-z0-9]*)(\('[^']+'\))?(\s*[+-]\s*\d{1,4}\s*(?:d|w|mo|y)?)?$/;
+
+/**
+ * Validate a WIQL macro string against the allow-list.
+ * Returns the trimmed value on success; throws on unknown name or malformed syntax.
+ */
+export function validateMacro(value: string): string {
+  const trimmed = value.trim();
+  const m = MACRO_RE.exec(trimmed);
+  if (!m) {
+    throw new Error(
+      `Invalid WIQL macro syntax: "${value}". ` +
+      `Expected @MacroName, @MacroName('arg'), or @MacroName ± N[d|w|mo|y].`
+    );
+  }
+  const name = m[1].toLowerCase();
+  if (!VALID_MACRO_NAMES.has(name)) {
+    const valid = [...VALID_MACRO_NAMES].map((n) => `@${n}`).join(', ');
+    throw new Error(`Unknown WIQL macro "@${m[1]}". Valid macros: ${valid}.`);
+  }
+  // Validate parameterized arg content against control characters
+  const arg = m[2]; // e.g. "('[MyProj]\\TeamA')"
+  if (arg && CONTROL_CHAR_RE.test(arg)) {
+    throw new Error('WIQL macro argument contains illegal control characters.');
+  }
+  return trimmed;
+}
+
 /**
  * Escape a string value for use inside a WIQL single-quoted literal.
  * - Escapes `'` → `''`
@@ -32,11 +69,11 @@ export function quoteWiqlString(value: string): string {
 }
 
 /**
- * Returns true when a string value should be emitted as a WIQL macro (not quoted).
- * Recognized macros: @project, @me, @today, @today - N, @startOfDay, @startOfWeek, @startOfMonth, @startOfYear
+ * Returns true when a string value looks like a WIQL macro (starts with @letter).
+ * Call validateMacro() to confirm the name is in the allow-list.
  */
 export function isWiqlMacro(value: string): boolean {
-  return /^@[a-zA-Z][a-zA-Z0-9]*(\s*[+-]\s*\d+)?$/.test(value.trim());
+  return MACRO_RE.test(value.trim());
 }
 
 /**
@@ -52,7 +89,7 @@ export function formatScalarValue(value: string | number | boolean): string {
     return String(value);
   }
   // string
-  if (isWiqlMacro(value)) return value.trim();
+  if (isWiqlMacro(value)) return validateMacro(value);
   return quoteWiqlString(value);
 }
 

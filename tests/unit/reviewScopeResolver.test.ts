@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ReviewScopeResolver, AdoScopeError } from '../../src/services/reviewScopeResolver.js';
 import type { IWiqlClient, WiqlResult } from '../../src/ado/wiqlClient.js';
+import type { IQueriesClient, QueryDefinition } from '../../src/ado/queriesClient.js';
 import type { WorkItemService } from '../../src/services/workItemService.js';
 import type { AdoWorkItem } from '../../src/types/ado.js';
 import type { ReviewScope } from '../../src/domain/reviewScope.js';
@@ -45,16 +46,30 @@ function makeItem(id: number, relations: AdoWorkItem['relations'] = []): AdoWork
   return { id, fields: { 'System.Id': id }, relations };
 }
 
+function makeQueriesClient(queryDef: Partial<QueryDefinition> = {}): IQueriesClient {
+  return {
+    getQueryById: vi.fn().mockResolvedValue({
+      id: 'abc123',
+      name: 'Test Query',
+      queryType: 'flat',
+      wiql: 'SELECT [System.Id] FROM WorkItems WHERE [System.State] = \'Active\'',
+      ...queryDef,
+    } satisfies QueryDefinition),
+  };
+}
+
 function makeResolver(
   wiqlClient: IWiqlClient,
   configOverride?: Partial<AppConfig>,
-  workItemService?: WorkItemService
+  workItemService?: WorkItemService,
+  queriesClient?: IQueriesClient
 ): ReviewScopeResolver {
   return new ReviewScopeResolver(
     wiqlClient,
     { ...baseConfig, ...configOverride },
     createSilentLogger(),
-    workItemService
+    workItemService,
+    queriesClient
   );
 }
 
@@ -403,15 +418,58 @@ describe('ReviewScopeResolver — linkedItems source', () => {
 // ─── savedQuery source ────────────────────────────────────────────────────────
 
 describe('ReviewScopeResolver — savedQuery source', () => {
-  it('throws NOT_IMPLEMENTED for savedQuery', async () => {
-    const resolver = makeResolver(makeWiqlClient());
-    const scope: ReviewScope = { source: { type: 'savedQuery', queryPathOrId: 'Shared Queries/All Requirements' } };
-    await expect(resolver.resolve(scope)).rejects.toMatchObject({ code: 'NOT_IMPLEMENTED' });
+  it('throws PROJECT_REQUIRED when project is missing', async () => {
+    const resolver = makeResolver(makeWiqlClient(), undefined, undefined, makeQueriesClient());
+    const scope: ReviewScope = { source: { type: 'savedQuery', queryPathOrId: 'q' } };
+    await expect(resolver.resolve(scope)).rejects.toMatchObject({ code: 'PROJECT_REQUIRED' });
   });
 
-  it('AdoScopeError is instanceof AdoScopeError', async () => {
+  it('throws CONFIGURATION_ERROR when queriesClient not injected', async () => {
     const resolver = makeResolver(makeWiqlClient());
-    const scope: ReviewScope = { source: { type: 'savedQuery', queryPathOrId: 'q' } };
-    await expect(resolver.resolve(scope)).rejects.toBeInstanceOf(AdoScopeError);
+    const scope: ReviewScope = { auth: AUTH, project: 'P', source: { type: 'savedQuery', queryPathOrId: 'q' } };
+    await expect(resolver.resolve(scope)).rejects.toMatchObject({ code: 'CONFIGURATION_ERROR' });
+  });
+
+  it('fetches query and returns IDs for flat query', async () => {
+    const wiqlClient = makeWiqlClient([10, 11]);
+    const resolver = makeResolver(wiqlClient, undefined, undefined, makeQueriesClient());
+    const scope: ReviewScope = { auth: AUTH, project: 'P', source: { type: 'savedQuery', queryPathOrId: 'abc123' } };
+    const result = await resolver.resolve(scope);
+    expect(result.ids).toEqual([10, 11]);
+    expect(result.sourceType).toBe('savedQuery');
+  });
+
+  it('rejects oneHop saved query with UNSUPPORTED_QUERY_TYPE', async () => {
+    const resolver = makeResolver(makeWiqlClient(), undefined, undefined, makeQueriesClient({ queryType: 'oneHop' }));
+    const scope: ReviewScope = { auth: AUTH, project: 'P', source: { type: 'savedQuery', queryPathOrId: 'q' } };
+    await expect(resolver.resolve(scope)).rejects.toMatchObject({ code: 'UNSUPPORTED_QUERY_TYPE' });
+  });
+
+  it('rejects tree saved query with UNSUPPORTED_QUERY_TYPE', async () => {
+    const resolver = makeResolver(makeWiqlClient(), undefined, undefined, makeQueriesClient({ queryType: 'tree' }));
+    const scope: ReviewScope = { auth: AUTH, project: 'P', source: { type: 'savedQuery', queryPathOrId: 'q' } };
+    await expect(resolver.resolve(scope)).rejects.toMatchObject({ code: 'UNSUPPORTED_QUERY_TYPE' });
+  });
+});
+
+describe('QueriesClient — path encoding', () => {
+  it('throws on path traversal segment (..)', async () => {
+    const { QueriesClient } = await import('../../src/ado/queriesClient.js');
+    const fakeAdoClient = { get: vi.fn() } as never;
+    const client = new QueriesClient(fakeAdoClient, {
+      adoOrgUrl: 'https://tfs.example.com',
+      adoApiVersion: '7.0',
+    } as never);
+    await expect(client.getQueryById(AUTH, 'P', 'Shared/../../../evil')).rejects.toThrow(/path traversal/);
+  });
+
+  it('throws on single-dot segment (.)', async () => {
+    const { QueriesClient } = await import('../../src/ado/queriesClient.js');
+    const fakeAdoClient = { get: vi.fn() } as never;
+    const client = new QueriesClient(fakeAdoClient, {
+      adoOrgUrl: 'https://tfs.example.com',
+      adoApiVersion: '7.0',
+    } as never);
+    await expect(client.getQueryById(AUTH, 'P', 'Shared/./query')).rejects.toThrow(/path traversal/);
   });
 });

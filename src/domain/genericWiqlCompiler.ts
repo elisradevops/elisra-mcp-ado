@@ -1,4 +1,4 @@
-import type { FieldFilter, OrderBy } from './fieldFilter.js';
+import type { FieldFilter, FilterValue, OrderBy } from './fieldFilter.js';
 import type { FieldInfo } from './adoFields.js';
 import type { CaseInsensitiveMap } from '../utils/caseInsensitiveMap.js';
 import { formatScalarValue, formatArrayValue } from './wiqlEscape.js';
@@ -7,6 +7,8 @@ export interface CompileOptions {
   project?: string;
   filters: FieldFilter[];
   orderBy?: OrderBy[];
+  /** Override default "SELECT [System.Id] FROM WorkItems" preamble. Used by PR-C link queries. */
+  _selectFrom?: string;
 }
 
 export interface CompileResult {
@@ -27,7 +29,7 @@ export class GenericWiqlCompiler {
   ) {}
 
   compile(options: CompileOptions): CompileResult {
-    const { project, filters, orderBy } = options;
+    const { project, filters, orderBy, _selectFrom = 'SELECT [System.Id] FROM WorkItems' } = options;
     const warnings: string[] = [];
 
     const clauses: string[] = [];
@@ -62,7 +64,7 @@ export class GenericWiqlCompiler {
         ? `ORDER BY ${orderBy.map((o) => `[${o.field}] ${o.direction}`).join(', ')}`
         : '';
 
-    const parts = ['SELECT [System.Id] FROM WorkItems', whereSection, orderSection].filter(Boolean);
+    const parts = [_selectFrom, whereSection, orderSection].filter(Boolean);
     const wiql = parts.join('\n');
 
     return { wiql, warnings };
@@ -87,7 +89,7 @@ export class GenericWiqlCompiler {
         `Run ado_discover_fields to verify it exists in this collection.`
       );
       // Unknown field: treat as string, validate operator loosely
-      return buildClause(canonicalField, operator, value, 'string');
+      return buildClause(canonicalField, operator, value, 'string', this.catalog);
     }
 
     // CONTAINS on TreePath is silently broken in ADO — reject it explicitly before generic validation
@@ -107,7 +109,7 @@ export class GenericWiqlCompiler {
       );
     }
 
-    return buildClause(canonicalField, operator, value, fieldInfo.type);
+    return buildClause(canonicalField, operator, value, fieldInfo.type, this.catalog);
   }
 }
 
@@ -115,20 +117,57 @@ export class GenericWiqlCompiler {
 
 type FieldTypeHint = 'string' | 'integer' | 'double' | 'dateTime' | 'boolean' | 'plainText' | 'html' | 'treePath' | 'identity' | 'guid';
 
+const FIELD_TO_FIELD_OPERATORS = new Set(['=', '<>', '<', '<=', '>', '>=']);
+
+function isFieldRef(v: FilterValue): v is { fieldRef: string } {
+  return typeof v === 'object' && !Array.isArray(v) && 'fieldRef' in v;
+}
+
 function buildClause(
   canonicalField: string,
   operator: string,
-  value: FieldFilter['value'],
-  typeHint: FieldTypeHint
+  value: FilterValue | undefined,
+  typeHint: FieldTypeHint,
+  catalog?: { get: (k: string) => unknown; getCanonicalKey: (k: string) => string | undefined }
 ): string {
   if (/[[\]]/.test(canonicalField)) {
     throw new Error(`Field name contains illegal bracket characters: "${canonicalField}"`);
   }
   const fieldExpr = `[${canonicalField}]`;
 
+  if (operator === 'IS EMPTY' || operator === 'IS NOT EMPTY') {
+    return `${fieldExpr} ${operator}`;
+  }
+
+  if (value === undefined || value === null) {
+    throw new Error(
+      `Operator "${operator}" requires a value for field "${canonicalField}". ` +
+      `Only IS EMPTY and IS NOT EMPTY can be used without a value.`
+    );
+  }
+
+  // Field-to-field comparison: { fieldRef: 'System.CreatedDate' }
+  if (isFieldRef(value)) {
+    if (!FIELD_TO_FIELD_OPERATORS.has(operator)) {
+      throw new Error(
+        `Operator "${operator}" does not support field-to-field comparison for field "${canonicalField}". ` +
+        `Allowed operators for field refs: ${[...FIELD_TO_FIELD_OPERATORS].join(', ')}.`
+      );
+    }
+    const refName = value.fieldRef;
+    if (!refName.trim()) {
+      throw new Error(`fieldRef must be a non-empty field reference name for field "${canonicalField}".`);
+    }
+    if (/[[\]]/.test(refName)) {
+      throw new Error(`fieldRef contains illegal bracket characters: "${refName}"`);
+    }
+    const canonicalRef = catalog?.getCanonicalKey(refName) ?? refName;
+    return `${fieldExpr} ${operator} [${canonicalRef}]`;
+  }
+
   if (operator === 'IN' || operator === 'NOT IN') {
     if (!Array.isArray(value)) {
-      // Wrap scalar in array with a note — permissive for UX
+      // Wrap scalar in array — permissive for UX
       value = [value as string | number] as string[] | number[];
     }
     const arr = value as string[] | number[];

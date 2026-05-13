@@ -10,19 +10,14 @@ import type { AdoWorkItem } from '../../types/ado.js';
 import type { ContextMode } from '../../services/completenessGapService.js';
 import type { ComparisonMode } from '../../services/consistencyCandidateService.js';
 import { checkFullModeGuard, takeSampleIds } from '../../domain/responseModes.js';
-
-const OperatorEnum = z.enum(['=', '<>', 'IN', 'NOT IN', '<', '<=', '>', '>=', 'CONTAINS', 'UNDER', 'NOT UNDER']);
+import { FieldFilterSchema } from './scopeTools.js';
 
 const SourceSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('wiql'), wiql: z.string() }),
   z.object({ type: z.literal('ids'), ids: z.array(z.number().int().positive()).min(1) }),
   z.object({
     type: z.literal('fieldFilters'),
-    filters: z.array(z.object({
-      field: z.string(),
-      operator: OperatorEnum,
-      value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.array(z.number())]),
-    })).min(1),
+    filters: z.array(FieldFilterSchema).min(1),
     orderBy: z.array(z.object({ field: z.string(), direction: z.enum(['ASC', 'DESC']) })).optional(),
   }),
   z.object({

@@ -7,6 +7,7 @@ import {
   STRING_OPERATORS,
   NUMERIC_OPERATORS,
   LONGTEXT_OPERATORS,
+  IDENTITY_OPERATORS,
 } from '../domain/fieldFilter.js';
 import type { Operator } from '../domain/fieldFilter.js';
 import { CaseInsensitiveMap } from '../utils/caseInsensitiveMap.js';
@@ -49,6 +50,7 @@ function deriveOperators(type: FieldType, isTreePath: boolean, isLongText: boole
   if (isLongText) return LONGTEXT_OPERATORS;
   if (type === 'integer' || type === 'double' || type === 'dateTime') return NUMERIC_OPERATORS;
   if (type === 'boolean') return ['=', '<>'] as const;
+  if (type === 'identity') return IDENTITY_OPERATORS;
   return STRING_OPERATORS;
 }
 

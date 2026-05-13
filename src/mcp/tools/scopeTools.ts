@@ -6,19 +6,15 @@ import { safeJsonStringify } from '../../utils/safeJson.js';
 import type { ReviewScope } from '../../domain/reviewScope.js';
 import { groupByFields, COMPACT_FIELDS } from '../../services/workItemService.js';
 import { takeSampleIds } from '../../domain/responseModes.js';
+import { OperatorSchema, FilterValueSchema } from '../../domain/fieldFilter.js';
 
-const OperatorEnum = z.enum(['=', '<>', 'IN', 'NOT IN', '<', '<=', '>', '>=', 'CONTAINS', 'UNDER', 'NOT UNDER']);
-
-const FieldFilterSchema = z.object({
+export const FieldFilterSchema = z.object({
   field: z.string().describe('Field reference name (e.g. System.State, Custom.CustomerID)'),
-  operator: OperatorEnum,
-  value: z.union([
-    z.string(),
-    z.number(),
-    z.boolean(),
-    z.array(z.string()),
-    z.array(z.number()),
-  ]).describe('Scalar or array value. Use array only with IN / NOT IN.'),
+  operator: OperatorSchema,
+  value: FilterValueSchema.optional().describe(
+    'Scalar, array, or { fieldRef: "OtherField" } for field-to-field comparison. ' +
+    'Omit for IS EMPTY / IS NOT EMPTY. Use array only with IN / NOT IN.'
+  ),
 });
 
 const OrderBySchema = z.object({
@@ -52,7 +48,7 @@ const SourceSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('savedQuery'),
-    queryPathOrId: z.string().describe('Saved query path or GUID (not supported in v1)'),
+    queryPathOrId: z.string().describe('Saved query GUID or path (e.g. "Shared Queries/My Folder/My Query"). Backslash separators are normalized.'),
   }),
 ]);
 

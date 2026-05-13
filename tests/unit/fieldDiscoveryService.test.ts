@@ -93,7 +93,7 @@ describe('FieldDiscoveryService — basic discovery', () => {
     expect(entry.allowedOperators).not.toContain('CONTAINS');
   });
 
-  it('maps html type correctly — CONTAINS only', async () => {
+  it('maps html type correctly — full LONGTEXT operator set', async () => {
     const client = makeFieldsClient([
       makeField({ referenceName: 'System.Description', name: 'Description', type: 'html' }),
     ]);
@@ -102,7 +102,12 @@ describe('FieldDiscoveryService — basic discovery', () => {
 
     const entry = catalog.get('System.Description')!;
     expect(entry.isLongText).toBe(true);
-    expect(entry.allowedOperators).toEqual(['CONTAINS']);
+    expect(entry.allowedOperators).toContain('CONTAINS');
+    expect(entry.allowedOperators).toContain('DOES NOT CONTAIN');
+    expect(entry.allowedOperators).toContain('CONTAINS WORDS');
+    expect(entry.allowedOperators).toContain('IS EMPTY');
+    expect(entry.allowedOperators).not.toContain('=');
+    expect(entry.allowedOperators).not.toContain('IN');
   });
 
   it('maps boolean type — only = and <>', async () => {

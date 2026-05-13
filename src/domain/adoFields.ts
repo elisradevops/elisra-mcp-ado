@@ -5,6 +5,7 @@ import {
   STRING_OPERATORS,
   NUMERIC_OPERATORS,
   LONGTEXT_OPERATORS,
+  IDENTITY_OPERATORS,
 } from './fieldFilter.js';
 
 export type FieldType =
@@ -49,7 +50,8 @@ function field(def: FieldDef & { type: FieldType }): FieldInfo {
   else if (def.type === 'integer' || def.type === 'double' || def.type === 'dateTime')
     allowedOperators = NUMERIC_OPERATORS;
   else if (def.type === 'boolean') allowedOperators = ['=', '<>'] as const;
-  else allowedOperators = STRING_OPERATORS; // string, identity, guid
+  else if (def.type === 'identity') allowedOperators = IDENTITY_OPERATORS;
+  else allowedOperators = STRING_OPERATORS; // string, guid
 
   return { ...def, isCustom, isIdentity, isLongText, isTreePath, allowedOperators, source: 'seed' };
 }
@@ -93,9 +95,27 @@ const SEED_FIELDS: FieldInfo[] = [
   field({ referenceName: 'Microsoft.VSTS.CMMI.RequirementType', displayName: 'Requirement Type', type: 'string', knownInDocGen: true, safeForFiltering: true, safeForGrouping: true }),
   field({ referenceName: 'Microsoft.VSTS.Common.VerificationMethod', displayName: 'Verification Method', type: 'string', knownInDocGen: true, safeForFiltering: true, safeForGrouping: true }),
   field({ referenceName: 'Microsoft.VSTS.Common.VerificationSite', displayName: 'Verification Site', type: 'string', knownInDocGen: true, safeForFiltering: true, safeForGrouping: true }),
+  field({ referenceName: 'Microsoft.VSTS.Common.Risk', displayName: 'Risk', type: 'string', knownInDocGen: true, safeForFiltering: true, safeForGrouping: true }),
+  field({ referenceName: 'Microsoft.VSTS.Common.ValueArea', displayName: 'Value Area', type: 'string', knownInDocGen: false, safeForFiltering: true, safeForGrouping: true }),
+  field({ referenceName: 'Microsoft.VSTS.Common.BusinessValue', displayName: 'Business Value', type: 'integer', knownInDocGen: false, safeForFiltering: true, safeForGrouping: false }),
+  field({ referenceName: 'Microsoft.VSTS.Common.Activity', displayName: 'Activity', type: 'string', knownInDocGen: false, safeForFiltering: true, safeForGrouping: true }),
+
+  // ── Scheduling fields ────────────────────────────────────────────────────
+  field({ referenceName: 'Microsoft.VSTS.Scheduling.StoryPoints', displayName: 'Story Points', type: 'double', knownInDocGen: true, safeForFiltering: true, safeForGrouping: false }),
+  field({ referenceName: 'Microsoft.VSTS.Scheduling.RemainingWork', displayName: 'Remaining Work', type: 'double', knownInDocGen: true, safeForFiltering: true, safeForGrouping: false }),
+  field({ referenceName: 'Microsoft.VSTS.Scheduling.OriginalEstimate', displayName: 'Original Estimate', type: 'double', knownInDocGen: false, safeForFiltering: true, safeForGrouping: false }),
+  field({ referenceName: 'Microsoft.VSTS.Scheduling.CompletedWork', displayName: 'Completed Work', type: 'double', knownInDocGen: false, safeForFiltering: true, safeForGrouping: false }),
+  field({ referenceName: 'Microsoft.VSTS.Scheduling.StartDate', displayName: 'Start Date', type: 'dateTime', knownInDocGen: false, safeForFiltering: true, safeForGrouping: false }),
+  field({ referenceName: 'Microsoft.VSTS.Scheduling.TargetDate', displayName: 'Target Date', type: 'dateTime', knownInDocGen: false, safeForFiltering: true, safeForGrouping: false }),
+  field({ referenceName: 'Microsoft.VSTS.Scheduling.DueDate', displayName: 'Due Date', type: 'dateTime', knownInDocGen: false, safeForFiltering: true, safeForGrouping: false }),
+
+  // ── Board fields ─────────────────────────────────────────────────────────
+  field({ referenceName: 'System.BoardColumn', displayName: 'Board Column', type: 'string', knownInDocGen: false, safeForFiltering: true, safeForGrouping: true }),
+  field({ referenceName: 'System.BoardLane', displayName: 'Board Lane', type: 'string', knownInDocGen: false, safeForFiltering: true, safeForGrouping: true }),
 
   // ── Long text (html) — CONTAINS only, not safe for grouping ──────────────
   field({ referenceName: 'System.Description', displayName: 'Description', type: 'html', knownInDocGen: true, safeForFiltering: true, safeForGrouping: false }),
+  field({ referenceName: 'System.History', displayName: 'History', type: 'html', knownInDocGen: false, safeForFiltering: true, safeForGrouping: false }),
   field({ referenceName: 'Microsoft.VSTS.Common.AcceptanceCriteria', displayName: 'Acceptance Criteria', type: 'html', knownInDocGen: false, safeForFiltering: true, safeForGrouping: false }),
   field({ referenceName: 'Microsoft.VSTS.Common.VerificationComment', displayName: 'Verification Comment', type: 'html', knownInDocGen: true, safeForFiltering: false, safeForGrouping: false }),
   field({ referenceName: 'Microsoft.VSTS.TCM.ReproSteps', displayName: 'Repro Steps', type: 'html', knownInDocGen: true, safeForFiltering: false, safeForGrouping: false }),
