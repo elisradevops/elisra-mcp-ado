@@ -53,7 +53,13 @@ export class WiqlClient implements IWiqlClient {
 
     this.logger.debug({ project, url }, 'Executing WIQL');
 
-    const response = await this.client.post<AdoWiqlResponse>(url, auth, { query: wiql });
+    const response = await this.client.request<AdoWiqlResponse>({
+      method: 'POST',
+      url,
+      auth,
+      params,
+      data: { query: wiql },
+    });
 
     const ids = extractIds(response);
     const result: WiqlResult = {
