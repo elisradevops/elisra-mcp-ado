@@ -40,7 +40,13 @@ export class WorkItemsClient implements IWorkItemsClient {
       body['fields'] = fields;
     }
 
-    const response = await this.client.post<AdoWorkItemsBatchResponse>(url, auth, body);
+    const response = await this.client.request<AdoWorkItemsBatchResponse>({
+      method: 'POST',
+      url,
+      auth,
+      params,
+      data: body,
+    });
     return response.value ?? [];
   }
 
