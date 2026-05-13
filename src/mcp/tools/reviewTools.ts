@@ -36,7 +36,7 @@ const SourceSchema = z.discriminatedUnion('type', [
 
 const REVIEW_RESPONSE_MODES = ['overview', 'samples', 'full'] as const;
 const DEFAULT_SAMPLE_SIZE = 10;
-const DEFAULT_MAX_ITEMS = 50;
+const DEFAULT_MAX_ITEMS = 200;
 const DEFAULT_MAX_GROUP_SIZE = 25;
 
 export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
@@ -61,7 +61,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       responseMode: z.enum(REVIEW_RESPONSE_MODES).optional().default('overview'),
       sampleSize: z.number().int().positive().max(50).optional().default(DEFAULT_SAMPLE_SIZE),
       maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS).describe(
-        `Max work items to review. Capped at ADO_FULL_RESPONSE_MAX_ITEMS (${config.adoFullResponseMaxItems}) for "full" mode.`
+        `Max work items to review in "samples"/"full" modes. "overview" always processes all matched items (capped at ADO_MAX_REVIEW_ITEMS, default 500). "full" also capped at ADO_FULL_RESPONSE_MAX_ITEMS (${config.adoFullResponseMaxItems}).`
       ),
     },
     async ({ pat, project, source, responseMode, sampleSize, maxItems }) => {
@@ -71,9 +71,12 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       try {
         const resolution = await reviewScopeResolver.resolve(scope);
 
-        const cap = responseMode === 'full'
-          ? Math.min(maxItems, config.adoFullResponseMaxItems)
-          : maxItems;
+        // overview: process everything (server-side cap); full: guard payload size; samples: caller cap
+        const cap = responseMode === 'overview'
+          ? Math.min(resolution.ids.length, config.adoMaxReviewItems)
+          : responseMode === 'full'
+            ? Math.min(maxItems, config.adoFullResponseMaxItems)
+            : maxItems;
 
         if (responseMode === 'full') {
           const guard = checkFullModeGuard(resolution.ids.length, cap);
@@ -160,9 +163,11 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       try {
         const resolution = await reviewScopeResolver.resolve(scope);
 
-        const cap = responseMode === 'full'
-          ? Math.min(maxItems, config.adoFullResponseMaxItems)
-          : maxItems;
+        const cap = responseMode === 'overview'
+          ? Math.min(resolution.ids.length, config.adoMaxReviewItems)
+          : responseMode === 'full'
+            ? Math.min(maxItems, config.adoFullResponseMaxItems)
+            : maxItems;
 
         if (responseMode === 'full') {
           const guard = checkFullModeGuard(resolution.ids.length, cap);
@@ -227,7 +232,9 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       groupField: z.string().optional().describe(
         'Field to group items for L3 peer analysis (e.g. System.AreaPath, Custom.SubSystem). Required for L3.'
       ),
-      maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS),
+      maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS).describe(
+        'Max items to analyze. Default 200. Server cap: ADO_MAX_REVIEW_ITEMS (default 500).'
+      ),
     },
     async ({ pat, project, source, contextMode, groupField, maxItems }) => {
       const auth = resolveAuthContext(config, pat);
@@ -235,7 +242,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
 
       try {
         const resolution = await reviewScopeResolver.resolve(scope);
-        const ids = resolution.ids.slice(0, maxItems);
+        const ids = resolution.ids.slice(0, Math.min(maxItems, config.adoMaxReviewItems));
         const needsRelations = contextMode === 'L2' || contextMode === 'L3';
 
         const items = await workItemService.fetchMany(ids, auth, {
@@ -317,7 +324,9 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       maxGroupSize: z.number().int().min(2).max(100).optional().default(DEFAULT_MAX_GROUP_SIZE).describe(
         'Groups larger than this are skipped — prevents O(N²). Default 25.'
       ),
-      maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS),
+      maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS).describe(
+        'Max items to analyze. Default 200. Server cap: ADO_MAX_REVIEW_ITEMS (default 500).'
+      ),
     },
     async ({ pat, project, source, comparisonMode, comparisonField, maxGroupSize, maxItems }) => {
       const auth = resolveAuthContext(config, pat);
@@ -325,7 +334,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
 
       try {
         const resolution = await reviewScopeResolver.resolve(scope);
-        const ids = resolution.ids.slice(0, maxItems);
+        const ids = resolution.ids.slice(0, Math.min(maxItems, config.adoMaxReviewItems));
 
         // Need relations for 'parent' mode (to read Hierarchy-Reverse links)
         const items = await workItemService.fetchMany(ids, auth, {
