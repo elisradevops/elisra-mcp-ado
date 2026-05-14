@@ -93,23 +93,45 @@ Extends the runtime image to add the [mcpo](https://github.com/open-webui/mcpo) 
 ```dockerfile
 FROM elisradevops/elisra-mcp-ado:latest AS mcpo-bridge
 
+ARG MCPO_VERSION=0.0.20
+
 USER root
 RUN apt-get update -qq && \
-    apt-get install -y --no-install-recommends python3 python3-pip && \
-    pip3 install --no-cache-dir --break-system-packages mcpo && \
+    apt-get install -y --no-install-recommends python3 python3-pip curl && \
+    pip3 install --no-cache-dir --break-system-packages "mcpo==${MCPO_VERSION}" && \
     rm -rf /var/lib/apt/lists/*
-USER mcp
 
+ENV LOG_FILE=/app/logs/mcp.stderr
+RUN mkdir -p /app/logs && chown mcp:mcp /app/logs
+
+USER mcp
 EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -fsS -H "Authorization: Bearer ${MCPO_API_KEY:-changeme}" \
+      http://127.0.0.1:8000/openapi.json || exit 1
 
 ENTRYPOINT ["sh", "-c", "mcpo --port 8000 --api-key \"${MCPO_API_KEY:-changeme}\" -- node /app/dist/index.js"]
 ```
 
-- Adds `python3` + `pip3` on top of the runtime image
+- Adds `python3` + `pip3` + `curl` on top of the runtime image
+- **Pins mcpo** to `MCPO_VERSION` (default `0.0.20`). Override at build time:
+  ```bash
+  docker build --build-arg MCPO_VERSION=0.0.21 -f docker/mcpo.Dockerfile .
+  ```
 - Installs `mcpo` with `--break-system-packages` (required on Debian bookworm; avoids venv overhead)
+- Sets `LOG_FILE=/app/logs/mcp.stderr` so the MCP server's Node process writes a persistent log file. Read after a crash:
+  ```bash
+  kubectl exec <pod> -- cat /app/logs/mcp.stderr
+  # or locally:
+  docker exec elisra-mcp-ado-mcpo cat /app/logs/mcp.stderr
+  ```
+- `HEALTHCHECK` probes `GET /openapi.json` on the mcpo HTTP port every 30 seconds. The container transitions to `unhealthy` if the probe fails 3 times in a row — this catches cases where the Node child process exits but the container itself stays up.
 - Drops back to `USER mcp` after installation
 - Exposes port `8000` internally; mapped to `MCPO_PORT` (default `9090`) on the host
 - `MCPO_API_KEY` is passed to mcpo's `--api-key` flag at startup
+
+> **Warning**: Never add `--log-level <level>` to the mcpo ENTRYPOINT. In the pinned mcpo version the flag is forwarded to uvicorn and crashes the child-process supervisor, producing `McpError: Connection closed` at startup with no useful error message. See `docs/troubleshooting.md` for diagnosis steps.
 
 ---
 
