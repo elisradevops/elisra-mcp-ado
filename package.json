@@ -1,6 +1,6 @@
 {
   "name": "@elisra-devops/elisra-mcp-ado",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Azure DevOps Server / TFS MCP server — read-only, scope-first, field-generic",
   "type": "module",
   "main": "dist/index.js",
@@ -30,7 +30,7 @@
     "@vitest/coverage-v8": "^2.1.0",
     "axios-mock-adapter": "^2.1.0",
     "eslint": "^9.39.4",
-"tsx": "^4.19.0",
+    "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "typescript-eslint": "^8.59.3",
     "vitest": "^2.1.0"
