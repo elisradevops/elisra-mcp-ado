@@ -58,3 +58,137 @@ export function isTraceabilityRel(rel: string): boolean {
 export function isWorkItemRel(rel: string): boolean {
   return !NON_WI_RELATION_TYPES.has(rel);
 }
+
+// ─── Seed catalog for ado_discover_link_types ─────────────────────────────────
+
+export interface SeedLinkType {
+  referenceName: string;
+  name: string;
+  usage: string;
+  isWorkItemLink: boolean;
+  isCustom: boolean;
+  knownInDocGen: boolean;
+  semanticHint?: string;
+}
+
+export const LINK_TYPE_SEMANTIC_HINTS: Readonly<Record<string, string>> = {
+  [ADO_LINK_TYPES.HIERARCHY_FORWARD]: 'parent→child link; source is the parent, target is the child',
+  [ADO_LINK_TYPES.HIERARCHY_REVERSE]: 'child→parent link; source is the child, target is the parent',
+  [ADO_LINK_TYPES.RELATED]: 'generic association between two work items',
+  [ADO_LINK_TYPES.AFFECTS_FORWARD]: 'source item affects the target item',
+  [ADO_LINK_TYPES.AFFECTS_REVERSE]: 'source item is affected by the target item',
+  [ADO_LINK_TYPES.TESTED_BY_FORWARD]: 'source item is tested by the target (test case)',
+  [ADO_LINK_TYPES.TESTED_BY_REVERSE]: 'source (test case) tests the target item',
+  [ADO_LINK_TYPES.ELISRA_COVERED_BY_FORWARD]: 'system req covers (satisfies) customer req — forward direction',
+  [ADO_LINK_TYPES.ELISRA_COVERED_BY_REVERSE]: 'customer req is covered by system req — reverse direction',
+};
+
+export function buildSeedLinkTypes(): SeedLinkType[] {
+  return [
+    {
+      referenceName: ADO_LINK_TYPES.HIERARCHY_FORWARD,
+      name: 'Child',
+      usage: 'workItemLink',
+      isWorkItemLink: true,
+      isCustom: false,
+      knownInDocGen: true,
+      semanticHint: LINK_TYPE_SEMANTIC_HINTS[ADO_LINK_TYPES.HIERARCHY_FORWARD],
+    },
+    {
+      referenceName: ADO_LINK_TYPES.HIERARCHY_REVERSE,
+      name: 'Parent',
+      usage: 'workItemLink',
+      isWorkItemLink: true,
+      isCustom: false,
+      knownInDocGen: true,
+      semanticHint: LINK_TYPE_SEMANTIC_HINTS[ADO_LINK_TYPES.HIERARCHY_REVERSE],
+    },
+    {
+      referenceName: ADO_LINK_TYPES.RELATED,
+      name: 'Related',
+      usage: 'workItemLink',
+      isWorkItemLink: true,
+      isCustom: false,
+      knownInDocGen: true,
+      semanticHint: LINK_TYPE_SEMANTIC_HINTS[ADO_LINK_TYPES.RELATED],
+    },
+    {
+      referenceName: ADO_LINK_TYPES.AFFECTS_FORWARD,
+      name: 'Affects',
+      usage: 'workItemLink',
+      isWorkItemLink: true,
+      isCustom: false,
+      knownInDocGen: true,
+      semanticHint: LINK_TYPE_SEMANTIC_HINTS[ADO_LINK_TYPES.AFFECTS_FORWARD],
+    },
+    {
+      referenceName: ADO_LINK_TYPES.AFFECTS_REVERSE,
+      name: 'Affected By',
+      usage: 'workItemLink',
+      isWorkItemLink: true,
+      isCustom: false,
+      knownInDocGen: true,
+      semanticHint: LINK_TYPE_SEMANTIC_HINTS[ADO_LINK_TYPES.AFFECTS_REVERSE],
+    },
+    {
+      referenceName: ADO_LINK_TYPES.TESTED_BY_FORWARD,
+      name: 'Tested By',
+      usage: 'workItemLink',
+      isWorkItemLink: true,
+      isCustom: false,
+      knownInDocGen: true,
+      semanticHint: LINK_TYPE_SEMANTIC_HINTS[ADO_LINK_TYPES.TESTED_BY_FORWARD],
+    },
+    {
+      referenceName: ADO_LINK_TYPES.TESTED_BY_REVERSE,
+      name: 'Tests',
+      usage: 'workItemLink',
+      isWorkItemLink: true,
+      isCustom: false,
+      knownInDocGen: true,
+      semanticHint: LINK_TYPE_SEMANTIC_HINTS[ADO_LINK_TYPES.TESTED_BY_REVERSE],
+    },
+    {
+      referenceName: ADO_LINK_TYPES.ARTIFACT_LINK,
+      name: 'Artifact Link',
+      usage: 'resourceLink',
+      isWorkItemLink: false,
+      isCustom: false,
+      knownInDocGen: true,
+    },
+    {
+      referenceName: ADO_LINK_TYPES.HYPERLINK,
+      name: 'Hyperlink',
+      usage: 'resourceLink',
+      isWorkItemLink: false,
+      isCustom: false,
+      knownInDocGen: true,
+    },
+    {
+      referenceName: ADO_LINK_TYPES.ATTACHED_FILE,
+      name: 'Attached File',
+      usage: 'resourceLink',
+      isWorkItemLink: false,
+      isCustom: false,
+      knownInDocGen: true,
+    },
+    {
+      referenceName: ADO_LINK_TYPES.ELISRA_COVERED_BY_FORWARD,
+      name: 'Covered by',
+      usage: 'workItemLink',
+      isWorkItemLink: true,
+      isCustom: true,
+      knownInDocGen: true,
+      semanticHint: LINK_TYPE_SEMANTIC_HINTS[ADO_LINK_TYPES.ELISRA_COVERED_BY_FORWARD],
+    },
+    {
+      referenceName: ADO_LINK_TYPES.ELISRA_COVERED_BY_REVERSE,
+      name: 'Covers',
+      usage: 'workItemLink',
+      isWorkItemLink: true,
+      isCustom: true,
+      knownInDocGen: true,
+      semanticHint: LINK_TYPE_SEMANTIC_HINTS[ADO_LINK_TYPES.ELISRA_COVERED_BY_REVERSE],
+    },
+  ];
+}

@@ -6,19 +6,15 @@ import { safeJsonStringify } from '../../utils/safeJson.js';
 import type { ReviewScope } from '../../domain/reviewScope.js';
 import { groupByFields, COMPACT_FIELDS } from '../../services/workItemService.js';
 import { takeSampleIds } from '../../domain/responseModes.js';
+import { OperatorSchema, FilterValueSchema, FilterNodeSchema } from '../../domain/fieldFilter.js';
 
-const OperatorEnum = z.enum(['=', '<>', 'IN', 'NOT IN', '<', '<=', '>', '>=', 'CONTAINS', 'UNDER', 'NOT UNDER']);
-
-const FieldFilterSchema = z.object({
+export const FieldFilterSchema = z.object({
   field: z.string().describe('Field reference name (e.g. System.State, Custom.CustomerID)'),
-  operator: OperatorEnum,
-  value: z.union([
-    z.string(),
-    z.number(),
-    z.boolean(),
-    z.array(z.string()),
-    z.array(z.number()),
-  ]).describe('Scalar or array value. Use array only with IN / NOT IN.'),
+  operator: OperatorSchema,
+  value: FilterValueSchema.optional().describe(
+    'Scalar, array, or { fieldRef: "OtherField" } for field-to-field comparison. ' +
+    'Omit for IS EMPTY / IS NOT EMPTY. Use array only with IN / NOT IN.'
+  ),
 });
 
 const OrderBySchema = z.object({
@@ -37,8 +33,31 @@ const SourceSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('fieldFilters'),
-    filters: z.array(FieldFilterSchema).min(1).describe('Field filter conditions (ANDed together)'),
+    filters: z.array(FieldFilterSchema).min(1).optional().describe(
+      'Field filter conditions (ANDed together). Ignored when filterTree is provided.'
+    ),
+    filterTree: FilterNodeSchema.optional().describe(
+      'Structured filter tree supporting AND/OR/NOT grouping. Wins over filters when both supplied.'
+    ),
     orderBy: z.array(OrderBySchema).optional(),
+    asOf: z.string().optional().describe('ASOF clause — ISO date (2025-01-01) or WIQL macro (@Today - 7d).'),
+  }),
+  z.object({
+    type: z.literal('linkQuery'),
+    sourceFilter: FilterNodeSchema.optional().describe('Filter conditions applied to source work items.'),
+    targetFilter: FilterNodeSchema.optional().describe('Filter conditions applied to target work items.'),
+    linkTypes: z.array(z.string()).optional().describe(
+      'Link type reference names to filter on. Omit for all link types. ' +
+      'Common types: System.LinkTypes.Hierarchy-Forward (parent→child), System.LinkTypes.Hierarchy-Reverse (child→parent), ' +
+      'System.LinkTypes.Related, System.LinkTypes.Affects-Forward, System.LinkTypes.Affects-Reverse, ' +
+      'Microsoft.VSTS.Common.TestedBy-Forward, Microsoft.VSTS.Common.TestedBy-Reverse, ' +
+      'Elisra.CoveredBy-Forward (system req covers customer req), Elisra.CoveredBy-Reverse (customer req covered by system req).'
+    ),
+    mode: z.enum(['MustContain', 'MayContain', 'DoesNotContain', 'Recursive']).describe(
+      'Link traversal mode. Recursive performs recursive traversal; cannot be combined with orderBy or asOf.'
+    ),
+    orderBy: z.array(OrderBySchema).optional(),
+    asOf: z.string().optional().describe('ASOF clause. Not allowed with mode=Recursive.'),
   }),
   z.object({
     type: z.literal('linkedItems'),
@@ -52,7 +71,7 @@ const SourceSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('savedQuery'),
-    queryPathOrId: z.string().describe('Saved query path or GUID (not supported in v1)'),
+    queryPathOrId: z.string().describe('Saved query GUID or path (e.g. "Shared Queries/My Folder/My Query"). Backslash separators are normalized.'),
   }),
 ]);
 

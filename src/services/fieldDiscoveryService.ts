@@ -7,6 +7,7 @@ import {
   STRING_OPERATORS,
   NUMERIC_OPERATORS,
   LONGTEXT_OPERATORS,
+  IDENTITY_OPERATORS,
 } from '../domain/fieldFilter.js';
 import type { Operator } from '../domain/fieldFilter.js';
 import { CaseInsensitiveMap } from '../utils/caseInsensitiveMap.js';
@@ -49,6 +50,7 @@ function deriveOperators(type: FieldType, isTreePath: boolean, isLongText: boole
   if (isLongText) return LONGTEXT_OPERATORS;
   if (type === 'integer' || type === 'double' || type === 'dateTime') return NUMERIC_OPERATORS;
   if (type === 'boolean') return ['=', '<>'] as const;
+  if (type === 'identity') return IDENTITY_OPERATORS;
   return STRING_OPERATORS;
 }
 
@@ -80,6 +82,7 @@ function adoFieldToInfo(f: AdoFieldDefinition): FieldInfo {
     knownInDocGen: false,
     safeForFiltering: safeForFilteringDefault(type),
     safeForGrouping: safeForGroupingDefault(type),
+    historyTracked: false,
     source: 'discovered',
   };
 }
@@ -105,6 +108,11 @@ function mergeCatalogs(
       info.knownInDocGen = seedEntry.knownInDocGen;
       info.safeForFiltering = seedEntry.safeForFiltering;
       info.safeForGrouping = seedEntry.safeForGrouping;
+      // Preserve historyTracked so WAS operator stays valid on discovered history-tracked fields
+      if (seedEntry.historyTracked) {
+        info.historyTracked = true;
+        info.allowedOperators = [...info.allowedOperators, 'WAS'] as const;
+      }
     }
     merged.set(info.referenceName, info);
   }

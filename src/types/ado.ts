@@ -89,6 +89,27 @@ export interface AdoWorkItemsBatchResponse {
   value: AdoWorkItem[];
 }
 
+// ADO work-item relation type as returned by _apis/wit/workItemRelationTypes
+export interface AdoWorkItemRelationType {
+  referenceName: string;
+  name: string;
+  attributes?: {
+    usage: 'workItemLink' | 'resourceLink' | 'remoteWorkItemLink' | string;
+    editable?: boolean;
+    enabled?: boolean;
+    acyclic?: boolean;
+    directional?: boolean;
+    singleTarget?: boolean;
+    topology?: 'tree' | 'network' | 'directedNetwork' | 'dependency' | string;
+  };
+  url?: string;
+}
+
+export interface AdoWorkItemRelationTypesResponse {
+  count?: number;
+  value: AdoWorkItemRelationType[];
+}
+
 // Compact work item shape — used in all overview/sample responses
 export interface AdoCompactWorkItem {
   id: number;

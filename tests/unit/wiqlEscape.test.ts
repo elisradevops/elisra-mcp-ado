@@ -3,6 +3,7 @@ import {
   escapeWiqlString,
   quoteWiqlString,
   isWiqlMacro,
+  validateMacro,
   formatScalarValue,
   formatArrayValue,
 } from '../../src/domain/wiqlEscape.js';
@@ -119,5 +120,52 @@ describe('formatArrayValue', () => {
 
   it('includes macro unquoted in array', () => {
     expect(formatArrayValue(['@me', 'John'])).toBe("(@me, 'John')");
+  });
+});
+
+describe('validateMacro', () => {
+  it('accepts known bare macros', () => {
+    expect(validateMacro('@Me')).toBe('@Me');
+    expect(validateMacro('@today')).toBe('@today');
+    expect(validateMacro('@CurrentIteration')).toBe('@CurrentIteration');
+    expect(validateMacro('@StartOfDay')).toBe('@StartOfDay');
+    expect(validateMacro('@Follows')).toBe('@Follows');
+  });
+
+  it('accepts bare arithmetic (no unit)', () => {
+    expect(validateMacro('@today - 7')).toBe('@today - 7');
+    expect(validateMacro('@today + 1')).toBe('@today + 1');
+  });
+
+  it('accepts arithmetic with unit suffix', () => {
+    expect(validateMacro('@today - 30d')).toBe('@today - 30d');
+    expect(validateMacro('@StartOfWeek + 1w')).toBe('@StartOfWeek + 1w');
+    expect(validateMacro('@today - 2mo')).toBe('@today - 2mo');
+    expect(validateMacro('@today - 1y')).toBe('@today - 1y');
+  });
+
+  it('accepts parameterized form', () => {
+    expect(validateMacro("@CurrentIteration('[MyProj]\\TeamA')")).toBe("@CurrentIteration('[MyProj]\\TeamA')");
+  });
+
+  it('trims surrounding whitespace', () => {
+    expect(validateMacro('  @me  ')).toBe('@me');
+  });
+
+  it('rejects unknown macro name', () => {
+    expect(() => validateMacro('@Yesterday')).toThrow(/Unknown WIQL macro/);
+    expect(() => validateMacro('@Foo')).toThrow(/Valid macros/);
+  });
+
+  it('rejects malformed macro syntax', () => {
+    expect(() => validateMacro('@today - 3z')).toThrow(/Invalid WIQL macro syntax/);
+  });
+
+  it('rejects oversized arithmetic offset (>4 digits)', () => {
+    expect(() => validateMacro('@today - 99999')).toThrow(/Invalid WIQL macro syntax/);
+  });
+
+  it('rejects macro arg containing control characters', () => {
+    expect(() => validateMacro('@CurrentIteration(\'[Proj\x00]\')')).toThrow(/control characters/);
   });
 });

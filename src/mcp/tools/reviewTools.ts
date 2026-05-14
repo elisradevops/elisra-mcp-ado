@@ -10,20 +10,31 @@ import type { AdoWorkItem } from '../../types/ado.js';
 import type { ContextMode } from '../../services/completenessGapService.js';
 import type { ComparisonMode } from '../../services/consistencyCandidateService.js';
 import { checkFullModeGuard, takeSampleIds } from '../../domain/responseModes.js';
-
-const OperatorEnum = z.enum(['=', '<>', 'IN', 'NOT IN', '<', '<=', '>', '>=', 'CONTAINS', 'UNDER', 'NOT UNDER']);
+import { FieldFilterSchema } from './scopeTools.js';
+import { FilterNodeSchema } from '../../domain/fieldFilter.js';
 
 const SourceSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('wiql'), wiql: z.string() }),
   z.object({ type: z.literal('ids'), ids: z.array(z.number().int().positive()).min(1) }),
   z.object({
     type: z.literal('fieldFilters'),
-    filters: z.array(z.object({
-      field: z.string(),
-      operator: OperatorEnum,
-      value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.array(z.number())]),
-    })).min(1),
+    filters: z.array(FieldFilterSchema).min(1).optional(),
+    filterTree: FilterNodeSchema.optional(),
     orderBy: z.array(z.object({ field: z.string(), direction: z.enum(['ASC', 'DESC']) })).optional(),
+    asOf: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal('linkQuery'),
+    sourceFilter: FilterNodeSchema.optional(),
+    targetFilter: FilterNodeSchema.optional(),
+    linkTypes: z.array(z.string()).optional().describe(
+      'Link type reference names. Common: System.LinkTypes.Hierarchy-Forward/Reverse, System.LinkTypes.Related, ' +
+      'System.LinkTypes.Affects-Forward/Reverse, Microsoft.VSTS.Common.TestedBy-Forward/Reverse, ' +
+      'Elisra.CoveredBy-Forward (system covers customer req), Elisra.CoveredBy-Reverse (customer req covered by system).'
+    ),
+    mode: z.enum(['MustContain', 'MayContain', 'DoesNotContain', 'Recursive']),
+    orderBy: z.array(z.object({ field: z.string(), direction: z.enum(['ASC', 'DESC']) })).optional(),
+    asOf: z.string().optional(),
   }),
   z.object({
     type: z.literal('linkedItems'),

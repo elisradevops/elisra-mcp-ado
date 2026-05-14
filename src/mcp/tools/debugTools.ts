@@ -3,8 +3,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './registerTools.js';
 import { safeJsonStringify } from '../../utils/safeJson.js';
 import { createDefaultCompiler } from '../../domain/genericWiqlCompiler.js';
-
-const OperatorEnum = z.enum(['=', '<>', 'IN', 'NOT IN', '<', '<=', '>', '>=', 'CONTAINS', 'UNDER', 'NOT UNDER']);
+import { FieldFilterSchema } from './scopeTools.js';
+import { FilterNodeSchema } from '../../domain/fieldFilter.js';
 
 /**
  * Register debug tools. Only called when ADO_ENABLE_DEBUG_OUTPUT=true.
@@ -24,20 +24,18 @@ export function registerDebugTools(server: McpServer, deps: ToolDeps): void {
     'Use to inspect the generated WIQL before running a full scope query.',
     {
       project: z.string().describe('Project name. Injected into the WIQL [System.TeamProject] clause.'),
-      filters: z.array(z.object({
-        field: z.string(),
-        operator: OperatorEnum,
-        value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.array(z.number())]),
-      })).min(1).describe('Field filter conditions (ANDed together).'),
+      filters: z.array(FieldFilterSchema).min(1).optional().describe('Field filter conditions (ANDed together). Ignored when filterTree is provided.'),
+      filterTree: FilterNodeSchema.optional().describe('Structured filter tree (AND/OR/NOT). Wins over filters when both supplied.'),
       orderBy: z.array(z.object({
         field: z.string(),
         direction: z.enum(['ASC', 'DESC']),
       })).optional().describe('ORDER BY clause.'),
+      asOf: z.string().optional().describe('ASOF clause — ISO date (2025-01-01) or WIQL macro (@Today - 7d).'),
     },
-    ({ project, filters, orderBy }) => {
+    ({ project, filters, filterTree, orderBy, asOf }) => {
       try {
         const compiler = createDefaultCompiler(config.adoAllowUnknownFields);
-        const { wiql, warnings } = compiler.compile({ project, filters, orderBy });
+        const { wiql, warnings } = compiler.compile({ project, filters, filterTree, orderBy, asOf });
 
         return Promise.resolve({
           content: [{

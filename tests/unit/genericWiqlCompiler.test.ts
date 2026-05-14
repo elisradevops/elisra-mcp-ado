@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { GenericWiqlCompiler, createDefaultCompiler } from '../../src/domain/genericWiqlCompiler.js';
 import { SEED_FIELD_CATALOG } from '../../src/domain/adoFields.js';
+import { OperatorSchema } from '../../src/domain/fieldFilter.js';
 
 function compiler(allowUnknown = false): GenericWiqlCompiler {
   return new GenericWiqlCompiler(SEED_FIELD_CATALOG, allowUnknown);
@@ -297,5 +298,665 @@ describe('GenericWiqlCompiler — combined project + filters + orderBy', () => {
     expect(wiql).toContain("[System.AreaPath] UNDER 'TestProject\\SubArea'");
     expect(wiql).toContain('ORDER BY [System.ChangedDate] DESC');
     expect(warnings).toHaveLength(0);
+  });
+});
+
+describe('GenericWiqlCompiler — IS EMPTY / IS NOT EMPTY operators', () => {
+  it('emits IS EMPTY without a value token', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.Description', operator: 'IS EMPTY' }],
+    });
+    expect(wiql).toContain('[System.Description] IS EMPTY');
+    expect(wiql).not.toMatch(/IS EMPTY '/);
+  });
+
+  it('emits IS NOT EMPTY without a value token', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.Description', operator: 'IS NOT EMPTY' }],
+    });
+    expect(wiql).toContain('[System.Description] IS NOT EMPTY');
+  });
+
+  it('accepts IS EMPTY on identity field (find unassigned items)', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.AssignedTo', operator: 'IS EMPTY' }],
+      })
+    ).not.toThrow();
+  });
+
+  it('accepts IS EMPTY on string field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'Custom.CustomerID', operator: 'IS EMPTY' }],
+      })
+    ).not.toThrow();
+  });
+
+  it('rejects IS EMPTY on numeric field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'Microsoft.VSTS.Common.Priority', operator: 'IS EMPTY' }],
+      })
+    ).toThrow(/not valid for field/);
+  });
+
+  it('rejects IS EMPTY on TreePath field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.AreaPath', operator: 'IS EMPTY' }],
+      })
+    ).toThrow(/not valid for field/);
+  });
+
+  it('rejects other operators when value is missing', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.State', operator: '=' }],
+      })
+    ).toThrow(/requires a value/);
+  });
+});
+
+describe('GenericWiqlCompiler — DOES NOT CONTAIN / CONTAINS WORDS operators', () => {
+  it('compiles DOES NOT CONTAIN on string field', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.Title', operator: 'DOES NOT CONTAIN', value: 'shall' }],
+    });
+    expect(wiql).toContain("[System.Title] DOES NOT CONTAIN 'shall'");
+  });
+
+  it('compiles CONTAINS WORDS on html field', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.Description', operator: 'CONTAINS WORDS', value: 'fail-safe redundancy' }],
+    });
+    expect(wiql).toContain("[System.Description] CONTAINS WORDS 'fail-safe redundancy'");
+  });
+
+  it('compiles DOES NOT CONTAIN WORDS on html field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.Description', operator: 'DOES NOT CONTAIN WORDS', value: 'TBD' }],
+      })
+    ).not.toThrow();
+  });
+
+  it('rejects DOES NOT CONTAIN on numeric field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'Microsoft.VSTS.Common.Priority', operator: 'DOES NOT CONTAIN', value: '1' }],
+      })
+    ).toThrow(/not valid for field/);
+  });
+});
+
+describe('GenericWiqlCompiler — EVER / IN GROUP / NOT IN GROUP operators', () => {
+  it('compiles EVER on identity field', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.AssignedTo', operator: 'EVER', value: '@me' }],
+    });
+    expect(wiql).toContain('[System.AssignedTo] EVER @me');
+  });
+
+  it('compiles IN GROUP on identity field', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.AssignedTo', operator: 'IN GROUP', value: '[MyProject]\\Reviewers' }],
+    });
+    expect(wiql).toContain("[System.AssignedTo] IN GROUP '[MyProject]\\Reviewers'");
+  });
+
+  it('compiles NOT IN GROUP on identity field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.AssignedTo', operator: 'NOT IN GROUP', value: '[MyProject]\\Excluded' }],
+      })
+    ).not.toThrow();
+  });
+
+  it('rejects EVER on TreePath field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.AreaPath', operator: 'EVER', value: 'x' }],
+      })
+    ).toThrow(/not valid for field/);
+  });
+
+  it('rejects IN GROUP on numeric field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'Microsoft.VSTS.Common.Priority', operator: 'IN GROUP', value: 'some-group' }],
+      })
+    ).toThrow(/not valid for field/);
+  });
+});
+
+describe('GenericWiqlCompiler — WAS EVER operator', () => {
+  it('compiles WAS EVER on identity field', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.AssignedTo', operator: 'WAS EVER', value: '@me' }],
+    });
+    expect(wiql).toContain('[System.AssignedTo] WAS EVER @me');
+  });
+
+  it('accepts WAS EVER (case-insensitive input)', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.AssignedTo', operator: 'WAS EVER' as never, value: '@me' }],
+    });
+    expect(wiql).toContain('WAS EVER');
+  });
+
+  it('rejects WAS EVER on TreePath field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.AreaPath', operator: 'WAS EVER', value: 'x' }],
+      })
+    ).toThrow(/not valid for field/);
+  });
+});
+
+describe('GenericWiqlCompiler — field-to-field comparison', () => {
+  it('emits [Field] op [OtherField] for fieldRef value', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.ChangedDate', operator: '>', value: { fieldRef: 'System.CreatedDate' } }],
+    });
+    expect(wiql).toContain('[System.ChangedDate] > [System.CreatedDate]');
+  });
+
+  it('resolves case-insensitive fieldRef', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.ChangedDate', operator: '=', value: { fieldRef: 'system.createddate' } }],
+    });
+    expect(wiql).toContain('[System.ChangedDate] = [System.CreatedDate]');
+  });
+
+  it('rejects CONTAINS with fieldRef', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.Title', operator: 'CONTAINS', value: { fieldRef: 'System.Description' } }],
+      })
+    ).toThrow(/does not support field-to-field/);
+  });
+
+  it('rejects fieldRef with bracket injection', () => {
+    expect(() =>
+      compiler(true).compile({
+        filters: [{ field: 'System.ChangedDate', operator: '=', value: { fieldRef: 'Bad[Ref]Name' } }],
+      })
+    ).toThrow(/illegal bracket/);
+  });
+
+  it('rejects WAS EVER with fieldRef (non-comparison operator)', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.AssignedTo', operator: 'WAS EVER', value: { fieldRef: 'System.CreatedBy' } }],
+      })
+    ).toThrow(/does not support field-to-field/);
+  });
+
+  it('rejects empty fieldRef string', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.ChangedDate', operator: '=', value: { fieldRef: '' } }],
+      })
+    ).toThrow(/non-empty/);
+  });
+
+  it('rejects whitespace-only fieldRef string', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.ChangedDate', operator: '=', value: { fieldRef: '   ' } }],
+      })
+    ).toThrow(/non-empty/);
+  });
+});
+
+describe('GenericWiqlCompiler — filterTree (OR / NOT / grouping)', () => {
+  it('flat filters still AND together (backward compat)', () => {
+    const { wiql } = compiler().compile({
+      project: 'P',
+      filters: [
+        { field: 'System.WorkItemType', operator: '=', value: 'Bug' },
+        { field: 'System.State', operator: '=', value: 'Active' },
+      ],
+    });
+    expect(wiql).toContain("[System.WorkItemType] = 'Bug'");
+    expect(wiql).toContain("[System.State] = 'Active'");
+    expect(wiql).toContain('AND');
+    expect(wiql).not.toMatch(/\(\s*\[System\.WorkItemType\]/);
+  });
+
+  it('top-level AND node flattens children without outer parens', () => {
+    const { wiql } = compiler().compile({
+      project: 'P',
+      filterTree: {
+        kind: 'and',
+        nodes: [
+          { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Bug' },
+          { kind: 'condition', field: 'System.State', operator: '=', value: 'Active' },
+        ],
+      },
+    });
+    expect(wiql).toContain("[System.WorkItemType] = 'Bug'");
+    expect(wiql).toContain("[System.State] = 'Active'");
+    // No outer parens wrapping the top-level AND children
+    expect(wiql).not.toMatch(/WHERE.*\(/s);
+  });
+
+  it('OR node wraps children in parens', () => {
+    const { wiql } = compiler().compile({
+      project: 'P',
+      filterTree: {
+        kind: 'or',
+        nodes: [
+          { kind: 'condition', field: 'System.State', operator: '=', value: 'Active' },
+          { kind: 'condition', field: 'System.State', operator: '=', value: 'Resolved' },
+        ],
+      },
+    });
+    expect(wiql).toContain("([System.State] = 'Active' OR [System.State] = 'Resolved')");
+  });
+
+  it('NOT node wraps child in NOT (...)', () => {
+    const { wiql } = compiler().compile({
+      filterTree: {
+        kind: 'not',
+        node: { kind: 'condition', field: 'System.State', operator: '=', value: 'Closed' },
+      },
+    });
+    expect(wiql).toContain("NOT ([System.State] = 'Closed')");
+  });
+
+  it('nested AND inside OR gets parens', () => {
+    const { wiql } = compiler().compile({
+      project: 'P',
+      filterTree: {
+        kind: 'or',
+        nodes: [
+          { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Bug' },
+          {
+            kind: 'and',
+            nodes: [
+              { kind: 'condition', field: 'System.State', operator: '=', value: 'Active' },
+              { kind: 'condition', field: 'System.Id', operator: '=', value: 42 },
+            ],
+          },
+        ],
+      },
+    });
+    expect(wiql).toContain("([System.WorkItemType] = 'Bug' OR ([System.State] = 'Active' AND [System.Id] = 42))");
+  });
+
+  it('top-level AND with nested OR: (A AND (B OR C))', () => {
+    const { wiql } = compiler().compile({
+      project: 'P',
+      filterTree: {
+        kind: 'and',
+        nodes: [
+          { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Bug' },
+          {
+            kind: 'or',
+            nodes: [
+              { kind: 'condition', field: 'System.State', operator: '=', value: 'Active' },
+              { kind: 'condition', field: 'System.State', operator: '=', value: 'Resolved' },
+            ],
+          },
+        ],
+      },
+    });
+    expect(wiql).toContain("[System.WorkItemType] = 'Bug'");
+    expect(wiql).toContain("([System.State] = 'Active' OR [System.State] = 'Resolved')");
+    // The OR group is a separate AND clause, not nested inside extra parens
+    const whereBody = wiql.split('WHERE')[1];
+    expect(whereBody).toContain('AND');
+  });
+
+  it('NOT (D AND E) — double parens acceptable in WIQL', () => {
+    const { wiql } = compiler().compile({
+      filterTree: {
+        kind: 'not',
+        node: {
+          kind: 'and',
+          nodes: [
+            { kind: 'condition', field: 'System.State', operator: '=', value: 'Closed' },
+            { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Task' },
+          ],
+        },
+      },
+    });
+    // and-node emits (A AND B); not wraps it → NOT ((A AND B)) — valid WIQL
+    expect(wiql).toContain("NOT (([System.State] = 'Closed' AND [System.WorkItemType] = 'Task'))");
+  });
+
+  it('NOT (A OR B)', () => {
+    const { wiql } = compiler().compile({
+      filterTree: {
+        kind: 'not',
+        node: {
+          kind: 'or',
+          nodes: [
+            { kind: 'condition', field: 'System.State', operator: '=', value: 'Closed' },
+            { kind: 'condition', field: 'System.State', operator: '=', value: 'Removed' },
+          ],
+        },
+      },
+    });
+    expect(wiql).toContain("NOT (([System.State] = 'Closed' OR [System.State] = 'Removed'))");
+  });
+
+  it('unknown field inside filterTree condition emits warning when allowUnknown=true', () => {
+    const { warnings } = compiler(true).compile({
+      filterTree: {
+        kind: 'condition',
+        field: 'Custom.NoSuchField',
+        operator: '=',
+        value: 'x',
+      },
+    });
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0]).toMatch(/not in the known field catalog/);
+  });
+
+  it('warns when both filters and filterTree supplied', () => {
+    const { warnings } = compiler().compile({
+      project: 'P',
+      filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+      filterTree: { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Bug' },
+    });
+    expect(warnings.some(w => w.includes('filterTree takes precedence'))).toBe(true);
+  });
+
+  it('filterTree wins when both filters and filterTree supplied', () => {
+    const { wiql } = compiler().compile({
+      project: 'P',
+      filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+      filterTree: {
+        kind: 'condition',
+        field: 'System.WorkItemType',
+        operator: '=',
+        value: 'Bug',
+      },
+    });
+    expect(wiql).toContain("[System.WorkItemType] = 'Bug'");
+    expect(wiql).not.toContain("[System.State]");
+  });
+
+  it('condition node in filterTree validates field/operator via catalog', () => {
+    expect(() =>
+      compiler().compile({
+        filterTree: {
+          kind: 'condition',
+          field: 'System.State',
+          operator: 'UNDER',
+          value: 'path',
+        },
+      })
+    ).toThrow(/not valid/);
+  });
+});
+
+describe('GenericWiqlCompiler — WAS operator (C3)', () => {
+  it('compiles WAS on System.State (history-tracked)', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.State', operator: 'WAS', value: 'Resolved' }],
+    });
+    expect(wiql).toContain("[System.State] WAS 'Resolved'");
+  });
+
+  it('compiles WAS on System.AssignedTo (history-tracked identity)', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.AssignedTo', operator: 'WAS', value: '@me' }],
+    });
+    expect(wiql).toContain('[System.AssignedTo] WAS @me');
+  });
+
+  it('compiles WAS on System.AreaPath (history-tracked treePath)', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.AreaPath', operator: 'WAS', value: 'MyProject\\TeamA' }],
+    });
+    expect(wiql).toContain("[System.AreaPath] WAS 'MyProject\\TeamA'");
+  });
+
+  it('rejects WAS on System.Title (not history-tracked)', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.Title', operator: 'WAS', value: 'old title' }],
+      })
+    ).toThrow(/not valid/);
+  });
+
+  it('rejects WAS on numeric field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'Microsoft.VSTS.Common.Priority', operator: 'WAS', value: 2 }],
+      })
+    ).toThrow(/not valid/);
+  });
+
+  it('normalizes "was" to WAS via OperatorSchema', () => {
+    expect(OperatorSchema.parse('was')).toBe('WAS');
+  });
+});
+
+describe('GenericWiqlCompiler — ASOF clause (C2)', () => {
+  it('emits ASOF with ISO date between WHERE and ORDER BY', () => {
+    const { wiql } = compiler().compile({
+      project: 'P',
+      filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+      asOf: '2025-01-01',
+      orderBy: [{ field: 'System.Id', direction: 'DESC' }],
+    });
+    const lines = wiql.split('\n');
+    const asOfIdx = lines.findIndex(l => l.startsWith('ASOF'));
+    const orderIdx = lines.findIndex(l => l.startsWith('ORDER BY'));
+    expect(asOfIdx).toBeGreaterThan(-1);
+    expect(wiql).toContain("ASOF '2025-01-01'");
+    expect(asOfIdx).toBeLessThan(orderIdx);
+  });
+
+  it('emits ASOF with macro unquoted', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+      asOf: '@Today - 7d',
+    });
+    expect(wiql).toContain('ASOF @Today - 7d');
+    expect(wiql).not.toContain("'@Today");
+  });
+
+  it('rejects invalid ASOF value', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+        asOf: 'not-a-date',
+      })
+    ).toThrow(/Invalid ASOF/);
+  });
+
+  it('rejects unknown macro in ASOF', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+        asOf: '@Yesterday',
+      })
+    ).toThrow(/Unknown WIQL macro/);
+  });
+});
+
+describe('GenericWiqlCompiler — compileLinkQuery (C1)', () => {
+  it('emits SELECT FROM WorkItemLinks with MODE', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      project: 'P',
+      mode: 'MustContain',
+      sourceFilter: { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Feature' },
+    });
+    expect(wiql).toContain('SELECT [System.Id] FROM WorkItemLinks');
+    expect(wiql).toContain('MODE (MustContain)');
+  });
+
+  it('prefixes source fields with [Source].[...]', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      project: 'P',
+      mode: 'MustContain',
+      sourceFilter: { kind: 'condition', field: 'System.State', operator: '=', value: 'Active' },
+    });
+    expect(wiql).toContain("[Source].[System.State] = 'Active'");
+  });
+
+  it('prefixes target fields with [Target].[...]', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      mode: 'MayContain',
+      targetFilter: { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Test Plan' },
+    });
+    expect(wiql).toContain("[Target].[System.WorkItemType] = 'Test Plan'");
+  });
+
+  it('emits link type IN clause', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      mode: 'Recursive',
+      linkTypes: ['System.LinkTypes.Hierarchy-Forward', 'System.LinkTypes.Hierarchy-Reverse'],
+      sourceFilter: { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Feature' },
+    });
+    expect(wiql).toContain("[System.Links.LinkType] IN ('System.LinkTypes.Hierarchy-Forward', 'System.LinkTypes.Hierarchy-Reverse')");
+  });
+
+  it('emits single link type with = not IN', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      mode: 'Recursive',
+      linkTypes: ['System.LinkTypes.Hierarchy-Forward'],
+      sourceFilter: { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Feature' },
+    });
+    expect(wiql).toContain("[System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward'");
+  });
+
+  it('emits project clause as [Source].[System.TeamProject] = @project', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      project: 'MyProj',
+      mode: 'Recursive',
+      linkTypes: ['System.LinkTypes.Hierarchy-Forward'],
+    });
+    expect(wiql).toContain('[Source].[System.TeamProject] = @project');
+  });
+
+  it('Recursive mode rejects orderBy', () => {
+    expect(() =>
+      compiler().compileLinkQuery({
+        mode: 'Recursive',
+        linkTypes: ['System.LinkTypes.Hierarchy-Forward'],
+        orderBy: [{ field: 'System.Id', direction: 'ASC' }],
+      })
+    ).toThrow(/ORDER BY.*Recursive/);
+  });
+
+  it('Recursive mode rejects asOf', () => {
+    expect(() =>
+      compiler().compileLinkQuery({
+        mode: 'Recursive',
+        linkTypes: ['System.LinkTypes.Hierarchy-Forward'],
+        asOf: '2025-01-01',
+      })
+    ).toThrow(/ASOF.*Recursive/);
+  });
+
+  it('rejects empty linkQuery (no source, target, or linkTypes)', () => {
+    expect(() =>
+      compiler().compileLinkQuery({ mode: 'MustContain' })
+    ).toThrow(/at least one/);
+  });
+
+  it('MustContain with orderBy and asOf emits both', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      project: 'P',
+      mode: 'MustContain',
+      sourceFilter: { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Feature' },
+      orderBy: [{ field: 'System.Id', direction: 'DESC' }],
+      asOf: '2025-06-01',
+    });
+    expect(wiql).toContain("ASOF '2025-06-01'");
+    expect(wiql).toContain('ORDER BY [System.Id] DESC');
+    expect(wiql).toContain('MODE (MustContain)');
+    // ASOF before ORDER BY
+    expect(wiql.indexOf('ASOF')).toBeLessThan(wiql.indexOf('ORDER BY'));
+  });
+
+  it('source OR filter works with link prefix', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      mode: 'MustContain',
+      sourceFilter: {
+        kind: 'or',
+        nodes: [
+          { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Feature' },
+          { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Epic' },
+        ],
+      },
+    });
+    expect(wiql).toContain("([Source].[System.WorkItemType] = 'Feature' OR [Source].[System.WorkItemType] = 'Epic')");
+  });
+
+  it('validates source field operator via catalog in link query', () => {
+    expect(() =>
+      compiler().compileLinkQuery({
+        mode: 'MustContain',
+        sourceFilter: { kind: 'condition', field: 'System.State', operator: 'UNDER', value: 'path' },
+      })
+    ).toThrow(/not valid/);
+  });
+
+  it('rejects WAS in source filter (not valid in link queries)', () => {
+    expect(() =>
+      compiler().compileLinkQuery({
+        mode: 'MustContain',
+        sourceFilter: { kind: 'condition', field: 'System.State', operator: 'WAS', value: 'Resolved' },
+      })
+    ).toThrow(/not supported in link queries/);
+  });
+
+  it('rejects WAS EVER in target filter (not valid in link queries)', () => {
+    expect(() =>
+      compiler().compileLinkQuery({
+        mode: 'MustContain',
+        targetFilter: { kind: 'condition', field: 'System.AssignedTo', operator: 'WAS EVER', value: '@me' },
+      })
+    ).toThrow(/not supported in link queries/);
+  });
+
+  it('target OR filter uses Target prefix', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      mode: 'MayContain',
+      targetFilter: {
+        kind: 'or',
+        nodes: [
+          { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Test Plan' },
+          { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Test Suite' },
+        ],
+      },
+    });
+    expect(wiql).toContain("([Target].[System.WorkItemType] = 'Test Plan' OR [Target].[System.WorkItemType] = 'Test Suite')");
+  });
+});
+
+describe('GenericWiqlCompiler — ASOF ISO validation', () => {
+  it('rejects out-of-range month', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+        asOf: '2025-13-01',
+      })
+    ).toThrow(/Invalid ASOF/);
+  });
+
+  it('rejects out-of-range day', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+        asOf: '2025-01-00',
+      })
+    ).toThrow(/Invalid ASOF/);
+  });
+
+  it('accepts valid ISO datetime with time component', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+      asOf: '2025-01-15T00:00:00Z',
+    });
+    expect(wiql).toContain("ASOF '2025-01-15T00:00:00Z'");
   });
 });
