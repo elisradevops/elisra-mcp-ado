@@ -11,13 +11,15 @@ import type { ContextMode } from '../../services/completenessGapService.js';
 import type { ComparisonMode } from '../../services/consistencyCandidateService.js';
 import { checkFullModeGuard, takeSampleIds } from '../../domain/responseModes.js';
 import { FieldFilterSchema } from './scopeTools.js';
+import { FilterNodeSchema } from '../../domain/fieldFilter.js';
 
 const SourceSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('wiql'), wiql: z.string() }),
   z.object({ type: z.literal('ids'), ids: z.array(z.number().int().positive()).min(1) }),
   z.object({
     type: z.literal('fieldFilters'),
-    filters: z.array(FieldFilterSchema).min(1),
+    filters: z.array(FieldFilterSchema).min(1).optional(),
+    filterTree: FilterNodeSchema.optional(),
     orderBy: z.array(z.object({ field: z.string(), direction: z.enum(['ASC', 'DESC']) })).optional(),
   }),
   z.object({

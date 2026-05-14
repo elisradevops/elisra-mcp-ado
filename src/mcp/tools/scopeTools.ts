@@ -6,7 +6,7 @@ import { safeJsonStringify } from '../../utils/safeJson.js';
 import type { ReviewScope } from '../../domain/reviewScope.js';
 import { groupByFields, COMPACT_FIELDS } from '../../services/workItemService.js';
 import { takeSampleIds } from '../../domain/responseModes.js';
-import { OperatorSchema, FilterValueSchema } from '../../domain/fieldFilter.js';
+import { OperatorSchema, FilterValueSchema, FilterNodeSchema } from '../../domain/fieldFilter.js';
 
 export const FieldFilterSchema = z.object({
   field: z.string().describe('Field reference name (e.g. System.State, Custom.CustomerID)'),
@@ -33,7 +33,12 @@ const SourceSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('fieldFilters'),
-    filters: z.array(FieldFilterSchema).min(1).describe('Field filter conditions (ANDed together)'),
+    filters: z.array(FieldFilterSchema).min(1).optional().describe(
+      'Field filter conditions (ANDed together). Ignored when filterTree is provided.'
+    ),
+    filterTree: FilterNodeSchema.optional().describe(
+      'Structured filter tree supporting AND/OR/NOT grouping. Wins over filters when both supplied.'
+    ),
     orderBy: z.array(OrderBySchema).optional(),
   }),
   z.object({

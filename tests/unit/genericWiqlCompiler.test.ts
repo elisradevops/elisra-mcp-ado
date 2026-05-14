@@ -508,3 +508,187 @@ describe('GenericWiqlCompiler — field-to-field comparison', () => {
     ).toThrow(/non-empty/);
   });
 });
+
+describe('GenericWiqlCompiler — filterTree (OR / NOT / grouping)', () => {
+  it('flat filters still AND together (backward compat)', () => {
+    const { wiql } = compiler().compile({
+      project: 'P',
+      filters: [
+        { field: 'System.WorkItemType', operator: '=', value: 'Bug' },
+        { field: 'System.State', operator: '=', value: 'Active' },
+      ],
+    });
+    expect(wiql).toContain("[System.WorkItemType] = 'Bug'");
+    expect(wiql).toContain("[System.State] = 'Active'");
+    expect(wiql).toContain('AND');
+    expect(wiql).not.toMatch(/\(\s*\[System\.WorkItemType\]/);
+  });
+
+  it('top-level AND node flattens children without outer parens', () => {
+    const { wiql } = compiler().compile({
+      project: 'P',
+      filterTree: {
+        kind: 'and',
+        nodes: [
+          { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Bug' },
+          { kind: 'condition', field: 'System.State', operator: '=', value: 'Active' },
+        ],
+      },
+    });
+    expect(wiql).toContain("[System.WorkItemType] = 'Bug'");
+    expect(wiql).toContain("[System.State] = 'Active'");
+    // No outer parens wrapping the top-level AND children
+    expect(wiql).not.toMatch(/WHERE.*\(/s);
+  });
+
+  it('OR node wraps children in parens', () => {
+    const { wiql } = compiler().compile({
+      project: 'P',
+      filterTree: {
+        kind: 'or',
+        nodes: [
+          { kind: 'condition', field: 'System.State', operator: '=', value: 'Active' },
+          { kind: 'condition', field: 'System.State', operator: '=', value: 'Resolved' },
+        ],
+      },
+    });
+    expect(wiql).toContain("([System.State] = 'Active' OR [System.State] = 'Resolved')");
+  });
+
+  it('NOT node wraps child in NOT (...)', () => {
+    const { wiql } = compiler().compile({
+      filterTree: {
+        kind: 'not',
+        node: { kind: 'condition', field: 'System.State', operator: '=', value: 'Closed' },
+      },
+    });
+    expect(wiql).toContain("NOT ([System.State] = 'Closed')");
+  });
+
+  it('nested AND inside OR gets parens', () => {
+    const { wiql } = compiler().compile({
+      project: 'P',
+      filterTree: {
+        kind: 'or',
+        nodes: [
+          { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Bug' },
+          {
+            kind: 'and',
+            nodes: [
+              { kind: 'condition', field: 'System.State', operator: '=', value: 'Active' },
+              { kind: 'condition', field: 'System.Id', operator: '=', value: 42 },
+            ],
+          },
+        ],
+      },
+    });
+    expect(wiql).toContain("([System.WorkItemType] = 'Bug' OR ([System.State] = 'Active' AND [System.Id] = 42))");
+  });
+
+  it('top-level AND with nested OR: (A AND (B OR C))', () => {
+    const { wiql } = compiler().compile({
+      project: 'P',
+      filterTree: {
+        kind: 'and',
+        nodes: [
+          { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Bug' },
+          {
+            kind: 'or',
+            nodes: [
+              { kind: 'condition', field: 'System.State', operator: '=', value: 'Active' },
+              { kind: 'condition', field: 'System.State', operator: '=', value: 'Resolved' },
+            ],
+          },
+        ],
+      },
+    });
+    expect(wiql).toContain("[System.WorkItemType] = 'Bug'");
+    expect(wiql).toContain("([System.State] = 'Active' OR [System.State] = 'Resolved')");
+    // The OR group is a separate AND clause, not nested inside extra parens
+    const whereBody = wiql.split('WHERE')[1];
+    expect(whereBody).toContain('AND');
+  });
+
+  it('NOT (D AND E) — double parens acceptable in WIQL', () => {
+    const { wiql } = compiler().compile({
+      filterTree: {
+        kind: 'not',
+        node: {
+          kind: 'and',
+          nodes: [
+            { kind: 'condition', field: 'System.State', operator: '=', value: 'Closed' },
+            { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Task' },
+          ],
+        },
+      },
+    });
+    // and-node emits (A AND B); not wraps it → NOT ((A AND B)) — valid WIQL
+    expect(wiql).toContain("NOT (([System.State] = 'Closed' AND [System.WorkItemType] = 'Task'))");
+  });
+
+  it('NOT (A OR B)', () => {
+    const { wiql } = compiler().compile({
+      filterTree: {
+        kind: 'not',
+        node: {
+          kind: 'or',
+          nodes: [
+            { kind: 'condition', field: 'System.State', operator: '=', value: 'Closed' },
+            { kind: 'condition', field: 'System.State', operator: '=', value: 'Removed' },
+          ],
+        },
+      },
+    });
+    expect(wiql).toContain("NOT (([System.State] = 'Closed' OR [System.State] = 'Removed'))");
+  });
+
+  it('unknown field inside filterTree condition emits warning when allowUnknown=true', () => {
+    const { warnings } = compiler(true).compile({
+      filterTree: {
+        kind: 'condition',
+        field: 'Custom.NoSuchField',
+        operator: '=',
+        value: 'x',
+      },
+    });
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0]).toMatch(/not in the known field catalog/);
+  });
+
+  it('warns when both filters and filterTree supplied', () => {
+    const { warnings } = compiler().compile({
+      project: 'P',
+      filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+      filterTree: { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Bug' },
+    });
+    expect(warnings.some(w => w.includes('filterTree takes precedence'))).toBe(true);
+  });
+
+  it('filterTree wins when both filters and filterTree supplied', () => {
+    const { wiql } = compiler().compile({
+      project: 'P',
+      filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+      filterTree: {
+        kind: 'condition',
+        field: 'System.WorkItemType',
+        operator: '=',
+        value: 'Bug',
+      },
+    });
+    expect(wiql).toContain("[System.WorkItemType] = 'Bug'");
+    expect(wiql).not.toContain("[System.State]");
+  });
+
+  it('condition node in filterTree validates field/operator via catalog', () => {
+    expect(() =>
+      compiler().compile({
+        filterTree: {
+          kind: 'condition',
+          field: 'System.State',
+          operator: 'UNDER',
+          value: 'path',
+        },
+      })
+    ).toThrow(/not valid/);
+  });
+});

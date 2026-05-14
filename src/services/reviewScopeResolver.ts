@@ -4,7 +4,7 @@ import type { AuthContext } from '../auth/authContext.js';
 import type { IWiqlClient } from '../ado/wiqlClient.js';
 import type { IQueriesClient } from '../ado/queriesClient.js';
 import type { ReviewScope, ScopeResolution } from '../domain/reviewScope.js';
-import type { FieldFilter, OrderBy } from '../domain/fieldFilter.js';
+import type { FieldFilter, FilterNode, OrderBy } from '../domain/fieldFilter.js';
 import type { WorkItemService } from './workItemService.js';
 import { createDefaultCompiler } from '../domain/genericWiqlCompiler.js';
 import { isWorkItemRel } from '../domain/adoLinkTypes.js';
@@ -34,7 +34,7 @@ export class ReviewScopeResolver {
         return this.resolveIds(source.ids);
 
       case 'fieldFilters':
-        return this.resolveFieldFilters(scope.project, source.filters, source.orderBy, auth);
+        return this.resolveFieldFilters(scope.project, source.filters, source.filterTree, source.orderBy, auth);
 
       case 'linkedItems':
         return this.resolveLinkedItems(scope.project, source.rootId, source.relationTypes, source.depth, auth);
@@ -117,7 +117,8 @@ export class ReviewScopeResolver {
 
   private async resolveFieldFilters(
     project: string | undefined,
-    filters: FieldFilter[],
+    filters: FieldFilter[] | undefined,
+    filterTree: FilterNode | undefined,
     orderBy: OrderBy[] | undefined,
     auth: AuthContext
   ): Promise<ScopeResolution> {
@@ -126,9 +127,12 @@ export class ReviewScopeResolver {
     }
 
     const compiler = createDefaultCompiler(this.config.adoAllowUnknownFields);
-    const { wiql, warnings } = compiler.compile({ project, filters, orderBy });
+    const { wiql, warnings } = compiler.compile({ project, filters, filterTree, orderBy });
 
-    this.logger.debug({ project, sourceType: 'fieldFilters', filterCount: filters.length }, 'Resolving fieldFilters scope');
+    this.logger.debug(
+      { project, sourceType: 'fieldFilters', usingFilterTree: !!filterTree, filterCount: filters?.length ?? 0 },
+      'Resolving fieldFilters scope'
+    );
 
     const result = await this.wiqlClient.execute({ project, wiql, auth });
 

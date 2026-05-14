@@ -105,3 +105,36 @@ export const OperatorSchema = z.preprocess(
     'IN GROUP', 'NOT IN GROUP',
   ])
 );
+
+// ─── Filter tree ──────────────────────────────────────────────────────────────
+
+/** Recursive discriminated union for OR / NOT / grouping support. */
+export type FilterNode =
+  | { kind: 'condition'; field: string; operator: Operator; value?: FilterValue }
+  | { kind: 'and'; nodes: FilterNode[] }
+  | { kind: 'or'; nodes: FilterNode[] }
+  | { kind: 'not'; node: FilterNode };
+
+/** Zod schema for FilterNode. z.lazy() is required for the self-referential shape. */
+export const FilterNodeSchema: z.ZodType<FilterNode, z.ZodTypeDef, unknown> = z.lazy(() =>
+  z.discriminatedUnion('kind', [
+    z.object({
+      kind: z.literal('condition'),
+      field: z.string(),
+      operator: OperatorSchema,
+      value: FilterValueSchema.optional(),
+    }),
+    z.object({
+      kind: z.literal('and'),
+      nodes: z.array(FilterNodeSchema).min(1),
+    }),
+    z.object({
+      kind: z.literal('or'),
+      nodes: z.array(FilterNodeSchema).min(1),
+    }),
+    z.object({
+      kind: z.literal('not'),
+      node: FilterNodeSchema,
+    }),
+  ])
+);

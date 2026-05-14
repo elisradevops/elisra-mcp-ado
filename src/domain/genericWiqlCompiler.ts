@@ -1,11 +1,14 @@
-import type { FieldFilter, FilterValue, OrderBy } from './fieldFilter.js';
+import type { FieldFilter, FilterNode, FilterValue, OrderBy } from './fieldFilter.js';
 import type { FieldInfo } from './adoFields.js';
 import type { CaseInsensitiveMap } from '../utils/caseInsensitiveMap.js';
 import { formatScalarValue, formatArrayValue } from './wiqlEscape.js';
 
 export interface CompileOptions {
   project?: string;
-  filters: FieldFilter[];
+  /** Flat filter list — treated as implicit AND root. Ignored when filterTree is provided. */
+  filters?: FieldFilter[];
+  /** Explicit filter tree (OR/NOT/grouping). Wins over filters when both supplied. */
+  filterTree?: FilterNode;
   orderBy?: OrderBy[];
   /** Override default "SELECT [System.Id] FROM WorkItems" preamble. Used by PR-C link queries. */
   _selectFrom?: string;
@@ -29,7 +32,7 @@ export class GenericWiqlCompiler {
   ) {}
 
   compile(options: CompileOptions): CompileResult {
-    const { project, filters, orderBy, _selectFrom = 'SELECT [System.Id] FROM WorkItems' } = options;
+    const { project, filters, filterTree, orderBy, _selectFrom = 'SELECT [System.Id] FROM WorkItems' } = options;
     const warnings: string[] = [];
 
     const clauses: string[] = [];
@@ -39,10 +42,25 @@ export class GenericWiqlCompiler {
       clauses.push('[System.TeamProject] = @project');
     }
 
-    // Filter clauses
-    for (const filter of filters) {
-      const clause = this.compileFilter(filter, warnings);
-      clauses.push(clause);
+    // Warn when caller supplies both — filterTree wins, filters are discarded
+    if (filterTree && filters?.length) {
+      warnings.push('Both filters and filterTree were provided; filterTree takes precedence and filters were ignored.');
+    }
+
+    // Filter clauses — filterTree wins when present
+    if (filterTree) {
+      // Top-level AND: flatten children into separate clauses (no outer parens)
+      if (filterTree.kind === 'and') {
+        for (const child of filterTree.nodes) {
+          clauses.push(this.buildNode(child, warnings));
+        }
+      } else {
+        clauses.push(this.buildNode(filterTree, warnings));
+      }
+    } else {
+      for (const filter of (filters ?? [])) {
+        clauses.push(this.compileFilter(filter, warnings));
+      }
     }
 
     const whereSection =
@@ -110,6 +128,19 @@ export class GenericWiqlCompiler {
     }
 
     return buildClause(canonicalField, operator, value, fieldInfo.type, this.catalog);
+  }
+
+  private buildNode(node: FilterNode, warnings: string[]): string {
+    switch (node.kind) {
+      case 'condition':
+        return this.compileFilter({ field: node.field, operator: node.operator, value: node.value }, warnings);
+      case 'and':
+        return `(${node.nodes.map(n => this.buildNode(n, warnings)).join(' AND ')})`;
+      case 'or':
+        return `(${node.nodes.map(n => this.buildNode(n, warnings)).join(' OR ')})`;
+      case 'not':
+        return `NOT (${this.buildNode(node.node, warnings)})`;
+    }
   }
 }
 

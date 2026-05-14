@@ -1,4 +1,4 @@
-import type { FieldFilter, OrderBy } from './fieldFilter.js';
+import type { FieldFilter, FilterNode, OrderBy } from './fieldFilter.js';
 import type { AuthContext } from '../auth/authContext.js';
 
 // ─── Source types ─────────────────────────────────────────────────────────────
@@ -15,7 +15,8 @@ export interface IdsSource {
 
 export interface FieldFiltersSource {
   type: 'fieldFilters';
-  filters: FieldFilter[];
+  filters?: FieldFilter[];
+  filterTree?: FilterNode;
   orderBy?: OrderBy[];
 }
 
