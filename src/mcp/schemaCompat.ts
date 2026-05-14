@@ -9,10 +9,11 @@
  *    and mcpo expect `$defs`.
  *
  * 2. Path-based self-refs (`$ref: "#/properties/..."`) are replaced with `{}`
- *    (accept-anything schema). These arise from `z.lazy()` recursive schemas;
- *    Pydantic cannot resolve intra-document path refs during model construction.
- *    Replacing with `{}` preserves the structure for non-recursive branches while
- *    letting mcpo generate a working OpenAPI spec.
+ *    (accept-anything schema). These arise when zod-to-json-schema deduplicates
+ *    shared sub-schemas via intra-document path refs. mcpo's Pydantic model builder
+ *    asserts all $ref targets live in $defs and crashes on path refs.
+ *    Replacing with `{}` preserves the structural slot while letting mcpo generate
+ *    a working OpenAPI spec.
  */
 export function rewriteDefinitionsToDefs(schema: unknown): unknown {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return schema;
@@ -26,13 +27,26 @@ export function rewriteDefinitionsToDefs(schema: unknown): unknown {
     delete obj.definitions;
   }
 
-  // Step 2 — replace intra-document path refs ($ref: "#/...") with {}
-  // These come from z.lazy() and cause Pydantic model builder to crash.
-  // Only replace refs that are NOT $defs refs (those are fine).
-  json = JSON.stringify(obj).replace(
-    /\{"\$ref":"#\/(?!\$defs\/)([^"]+)"\}/g,
-    '{}'
-  );
+  // Step 2 — recursive walk: replace any object whose $ref points outside $defs with {}.
+  // Regex-based replacement is unreliable when $ref objects have sibling keys
+  // (e.g. additionalProperties) — the pattern {"$ref":"..."} stops matching.
+  return replacePathRefs(obj);
+}
 
-  return JSON.parse(json) as unknown;
+function replacePathRefs(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return (value as unknown[]).map(replacePathRefs);
+
+  const obj = value as Record<string, unknown>;
+
+  // If this object carries a $ref pointing outside $defs, collapse it to accept-anything.
+  if (typeof obj['$ref'] === 'string' && !obj['$ref'].startsWith('#/$defs/')) {
+    return {};
+  }
+
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    result[k] = replacePathRefs(v);
+  }
+  return result;
 }
