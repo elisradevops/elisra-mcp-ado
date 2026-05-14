@@ -19,6 +19,8 @@ export interface LinkTypeInfo {
   isCustom: boolean;
   knownInDocGen: boolean;
   semanticHint?: string;
+  isForward?: boolean;
+  oppositeEndReferenceName?: string;
   source: 'discovered' | 'seed' | 'both';
 }
 
@@ -69,6 +71,8 @@ function mergeCatalogs(
       isCustom: isCustomRef(d.referenceName),
       knownInDocGen: existing?.knownInDocGen ?? false,
       semanticHint: LINK_TYPE_SEMANTIC_HINTS[d.referenceName] ?? existing?.semanticHint,
+      ...(d.attributes?.isForward !== undefined ? { isForward: d.attributes.isForward } : {}),
+      ...(d.attributes?.oppositeEndReferenceName !== undefined ? { oppositeEndReferenceName: d.attributes.oppositeEndReferenceName } : {}),
       source: existing ? 'both' : 'discovered',
     };
     catalog.set(d.referenceName, info);
@@ -145,6 +149,8 @@ export class LinkTypeDiscoveryService {
         isCustom: lt.isCustom,
         knownInDocGen: lt.knownInDocGen,
         ...(lt.semanticHint !== undefined ? { semanticHint: lt.semanticHint } : {}),
+        ...(lt.isForward !== undefined ? { isForward: lt.isForward } : {}),
+        ...(lt.oppositeEndReferenceName !== undefined ? { oppositeEndReferenceName: lt.oppositeEndReferenceName } : {}),
         source: lt.source,
       })),
       warnings,

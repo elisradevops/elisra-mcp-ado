@@ -6,6 +6,7 @@ const envSchema = z.object({
     .string({ required_error: 'ADO_ORG_URL is required' })
     .url('ADO_ORG_URL must be a valid URL')
     .refine((v) => v.startsWith('https://'), 'ADO_ORG_URL must use HTTPS (on-prem TFS requires a valid CA cert; see NODE_EXTRA_CA_CERTS)'),
+  // ADO Server 2022 → 7.0 (default). TFS 2018 → set to 4.1 explicitly. See docs/onprem-ado.md.
   ADO_API_VERSION: z.string().default('7.0'),
   ADO_BATCH_SIZE: z.coerce.number().int().min(1).max(200).default(200),
   ADO_AUTH_MODE: z

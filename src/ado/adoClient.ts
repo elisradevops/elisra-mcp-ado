@@ -7,6 +7,7 @@ import type { AuthContext } from '../auth/authContext.js';
 import { buildAuthHeader } from '../auth/patAuth.js';
 import { redactError } from '../auth/redact.js';
 import { isTlsError } from '../security/secretRedaction.js';
+import { API_VERSION_LADDER, shouldStepDown } from './apiVersionLadder.js';
 
 const RETRY_MAX = 3;
 const RETRY_BASE_MS = 500;
@@ -87,6 +88,12 @@ export interface AdoRequestOptions {
   params?: Record<string, string | number | boolean | undefined>;
   data?: unknown;
   headers?: Record<string, string>;
+  /**
+   * When true, on a step-down HTTP status (400/404/405/406/410) walk the API version ladder
+   * (7.1 → 5.1 → 4.1 → no version) starting at config.adoApiVersion and retry.
+   * No effect when the params object has no 'api-version' key.
+   */
+  apiVersionFallback?: boolean;
 }
 
 export class AdoClient {
@@ -101,12 +108,60 @@ export class AdoClient {
   }
 
   async request<T>(options: AdoRequestOptions): Promise<T> {
+    if (options.apiVersionFallback && options.params && 'api-version' in options.params) {
+      return this.requestWithVersionFallback<T>(options);
+    }
+    return this.requestOnce<T>(options, options.params);
+  }
+
+  private async requestWithVersionFallback<T>(options: AdoRequestOptions): Promise<T> {
+    const configuredVersion = String(options.params!['api-version'] ?? '');
+
+    // Always try the configured version first (it may not be in the ladder at all, e.g. '7.0').
+    // On a step-down status, walk ladder entries that are strictly below the configured version.
+    const configuredFloat = parseFloat(configuredVersion);
+    const subLadder = API_VERSION_LADDER.filter(
+      (v) => v === null || parseFloat(v) < configuredFloat
+    );
+
+    const trialVersions: Array<string | null> = [configuredVersion, ...subLadder];
+
+    let lastStepDownError: unknown;
+    for (const version of trialVersions) {
+      const params = { ...options.params };
+      if (version === null) {
+        delete params['api-version'];
+      } else {
+        params['api-version'] = version;
+      }
+
+      try {
+        return await this.requestOnce<T>(options, params);
+      } catch (err) {
+        const status: number | undefined =
+          (err as { status?: number })?.status ??
+          (err as { response?: { status?: number } })?.response?.status;
+        if (status !== undefined && shouldStepDown(status)) {
+          this.logger.debug({ version, status, url: options.url }, 'api-version step-down');
+          lastStepDownError = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastStepDownError;
+  }
+
+  private async requestOnce<T>(
+    options: AdoRequestOptions,
+    params: Record<string, string | number | boolean | undefined> | undefined
+  ): Promise<T> {
     const authHeader = options.auth.pat ? buildAuthHeader(options.auth.pat) : undefined;
 
     const axiosConfig: AxiosRequestConfig = {
       method: options.method,
       url: options.url,
-      params: options.params,
+      params,
       data: options.data,
       headers: {
         'Content-Type': 'application/json',
@@ -126,7 +181,7 @@ export class AdoClient {
         if (status >= 400) {
           const isRetryableStatus = status === 429 || status >= 500;
           if (!isRetryableStatus) {
-            // 401/403/404 — not retryable, map to safe error
+            // step-down statuses are handled by requestWithVersionFallback; here we surface them
             const fakeErr = new AxiosError(
               `Request failed with status ${status}`,
               String(status),

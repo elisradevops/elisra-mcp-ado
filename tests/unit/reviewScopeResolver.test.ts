@@ -25,7 +25,26 @@ const baseConfig: AppConfig = {
 
 function makeWiqlClient(ids: number[] = [1, 2, 3]): IWiqlClient {
   return {
-    execute: vi.fn().mockResolvedValue({ ids, totalMatched: ids.length, queryType: 'flat' } satisfies WiqlResult),
+    execute: vi.fn().mockResolvedValue({
+      ids,
+      sourceIds: ids,
+      targetIds: [],
+      totalMatched: ids.length,
+      queryType: 'flat',
+    } satisfies WiqlResult),
+  };
+}
+
+function makeLinkWiqlClient(sourceIds: number[], targetIds: number[]): IWiqlClient {
+  const allIds = [...new Set([...sourceIds, ...targetIds])];
+  return {
+    execute: vi.fn().mockResolvedValue({
+      ids: allIds,
+      sourceIds,
+      targetIds,
+      totalMatched: allIds.length,
+      queryType: 'tree',
+    } satisfies WiqlResult),
   };
 }
 
@@ -471,5 +490,64 @@ describe('QueriesClient — path encoding', () => {
       adoApiVersion: '7.0',
     } as never);
     await expect(client.getQueryById(AUTH, 'P', 'Shared/./query')).rejects.toThrow(/path traversal/);
+  });
+});
+
+// ─── linkQuery resultSide ─────────────────────────────────────────────────────
+
+describe('ReviewScopeResolver — linkQuery resultSide', () => {
+  it('defaults to source side (excludes target-only IDs)', async () => {
+    const client = makeLinkWiqlClient([10, 20], [30, 40]);
+    const resolver = makeResolver(client);
+    const scope: ReviewScope = {
+      project: 'CUAS',
+      auth: AUTH,
+      source: {
+        type: 'linkQuery',
+        mode: 'MustContain',
+        linkTypes: ['System.LinkTypes.Hierarchy-Forward'],
+        // resultSide omitted → default 'source'
+      },
+    };
+    const result = await resolver.resolve(scope);
+    expect(result.ids).toEqual(expect.arrayContaining([10, 20]));
+    expect(result.ids).not.toContain(30);
+    expect(result.ids).not.toContain(40);
+  });
+
+  it('returns target side when resultSide="target"', async () => {
+    const client = makeLinkWiqlClient([10, 20], [30, 40]);
+    const resolver = makeResolver(client);
+    const scope: ReviewScope = {
+      project: 'CUAS',
+      auth: AUTH,
+      source: {
+        type: 'linkQuery',
+        mode: 'MustContain',
+        linkTypes: ['System.LinkTypes.Hierarchy-Forward'],
+        resultSide: 'target',
+      },
+    };
+    const result = await resolver.resolve(scope);
+    expect(result.ids).toEqual(expect.arrayContaining([30, 40]));
+    expect(result.ids).not.toContain(10);
+    expect(result.ids).not.toContain(20);
+  });
+
+  it('returns full union when resultSide="both"', async () => {
+    const client = makeLinkWiqlClient([10, 20], [30, 40]);
+    const resolver = makeResolver(client);
+    const scope: ReviewScope = {
+      project: 'CUAS',
+      auth: AUTH,
+      source: {
+        type: 'linkQuery',
+        mode: 'MustContain',
+        linkTypes: ['System.LinkTypes.Hierarchy-Forward'],
+        resultSide: 'both',
+      },
+    };
+    const result = await resolver.resolve(scope);
+    expect(result.ids).toEqual(expect.arrayContaining([10, 20, 30, 40]));
   });
 });

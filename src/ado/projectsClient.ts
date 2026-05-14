@@ -15,10 +15,12 @@ export class ProjectsClient {
 
   async listProjects(auth: AuthContext, top = 10): Promise<AdoProject[]> {
     const url = `${this.config.adoOrgUrl}/_apis/projects`;
-    const response = await this.client.get<AdoProjectsResponse>(url, auth, {
-      $top: top,
-      stateFilter: 'wellFormed',
-      'api-version': this.config.adoApiVersion,
+    const response = await this.client.request<AdoProjectsResponse>({
+      method: 'GET',
+      url,
+      auth,
+      params: { $top: top, stateFilter: 'wellFormed', 'api-version': this.config.adoApiVersion },
+      apiVersionFallback: true,
     });
     return response.value ?? [];
   }

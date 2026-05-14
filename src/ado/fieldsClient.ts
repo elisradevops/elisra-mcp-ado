@@ -11,8 +11,12 @@ export class FieldsClient {
 
   async listFields(auth: AuthContext): Promise<AdoFieldDefinition[]> {
     const url = `${this.config.adoOrgUrl}/_apis/wit/fields`;
-    const response = await this.client.get<AdoFieldsResponse>(url, auth, {
-      'api-version': this.config.adoApiVersion,
+    const response = await this.client.request<AdoFieldsResponse>({
+      method: 'GET',
+      url,
+      auth,
+      params: { 'api-version': this.config.adoApiVersion },
+      apiVersionFallback: true,
     });
     return response.value ?? [];
   }
@@ -24,8 +28,12 @@ export class FieldsClient {
   ): Promise<AdoWitFieldEntry[]> {
     const encodedWit = encodeURIComponent(workItemType);
     const url = `${this.config.adoOrgUrl}/${encodeURIComponent(project)}/_apis/wit/workitemtypes/${encodedWit}/fields`;
-    const response = await this.client.get<AdoWitFieldsResponse>(url, auth, {
-      'api-version': this.config.adoApiVersion,
+    const response = await this.client.request<AdoWitFieldsResponse>({
+      method: 'GET',
+      url,
+      auth,
+      params: { 'api-version': this.config.adoApiVersion },
+      apiVersionFallback: true,
     });
     return response.value ?? [];
   }

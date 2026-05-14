@@ -34,7 +34,7 @@ export function registerDebugTools(server: McpServer, deps: ToolDeps): void {
     },
     ({ project, filters, filterTree, orderBy, asOf }) => {
       try {
-        const compiler = createDefaultCompiler(config.adoAllowUnknownFields);
+        const compiler = createDefaultCompiler(config.adoAllowUnknownFields, config.adoApiVersion);
         const { wiql, warnings } = compiler.compile({ project, filters, filterTree, orderBy, asOf });
 
         return Promise.resolve({

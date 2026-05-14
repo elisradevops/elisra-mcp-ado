@@ -1,7 +1,8 @@
 import type { FieldFilter, FilterNode, FilterValue, OrderBy } from './fieldFilter.js';
 import type { FieldInfo } from './adoFields.js';
 import type { CaseInsensitiveMap } from '../utils/caseInsensitiveMap.js';
-import { formatScalarValue, formatArrayValue, formatAsOf } from './wiqlEscape.js';
+import { formatScalarValue, formatArrayValue, formatAsOf, getMacroMinApiVersion } from './wiqlEscape.js';
+import { parseApiMajor } from '../ado/apiVersionLadder.js';
 
 export interface CompileOptions {
   project?: string;
@@ -42,8 +43,23 @@ export interface CompileResult {
 export class GenericWiqlCompiler {
   constructor(
     private readonly catalog: CaseInsensitiveMap<FieldInfo>,
-    private readonly allowUnknownFields: boolean
+    private readonly allowUnknownFields: boolean,
+    private readonly adoApiVersion: string = '7.0'
   ) {}
+
+  private warnMacro(rawValue: string, warnings: string[]): void {
+    const trimmed = rawValue.trim();
+    if (!trimmed.startsWith('@')) return;
+    const name = trimmed.replace(/^@/, '').split(/[\s(+-]/)[0];
+    const minVersion = getMacroMinApiVersion(name);
+    if (!minVersion) return;
+    if (parseApiMajor(this.adoApiVersion) < parseApiMajor(minVersion)) {
+      warnings.push(
+        `WIQL macro "@${name}" requires ADO Server 2019+ (api-version ${minVersion}). ` +
+        `Configured ADO_API_VERSION="${this.adoApiVersion}" may not accept it. See docs/onprem-ado.md.`
+      );
+    }
+  }
 
   compile(options: CompileOptions): CompileResult {
     const { project, filters, filterTree, orderBy, asOf, _selectFrom = 'SELECT [System.Id] FROM WorkItems' } = options;
@@ -80,6 +96,7 @@ export class GenericWiqlCompiler {
     const whereSection =
       clauses.length > 0 ? `WHERE ${clauses.join('\n  AND ')}` : '';
 
+    if (asOf) this.warnMacro(asOf, warnings);
     const asOfSection = asOf ? `ASOF ${formatAsOf(asOf)}` : '';
 
     const orderSection =
@@ -89,6 +106,12 @@ export class GenericWiqlCompiler {
 
     const parts = [_selectFrom, whereSection, asOfSection, orderSection].filter(Boolean);
     const wiql = parts.join('\n');
+
+    if (wiql.length > 32_000) {
+      warnings.push(
+        `Generated WIQL is ${wiql.length} chars; server limit is 32 768. Tighten filters or split the query.`
+      );
+    }
 
     return { wiql, warnings };
   }
@@ -112,6 +135,7 @@ export class GenericWiqlCompiler {
         `Run ado_discover_fields to verify it exists in this collection.`
       );
       // Unknown field: treat as string, validate operator loosely
+      if (typeof value === 'string') this.warnMacro(value, warnings);
       return buildClause(canonicalField, operator, value, 'string', this.catalog);
     }
 
@@ -132,6 +156,7 @@ export class GenericWiqlCompiler {
       );
     }
 
+    if (typeof value === 'string') this.warnMacro(value, warnings);
     return buildClause(canonicalField, operator, value, fieldInfo.type, this.catalog);
   }
 
@@ -182,6 +207,7 @@ export class GenericWiqlCompiler {
     }
 
     const whereSection = clauses.length > 0 ? `WHERE ${clauses.join('\n  AND ')}` : '';
+    if (asOf) this.warnMacro(asOf, warnings);
     const asOfSection = asOf ? `ASOF ${formatAsOf(asOf)}` : '';
     const orderSection = orderBy?.length
       ? `ORDER BY ${validateAndFormatOrderBy(orderBy)}`
@@ -189,7 +215,15 @@ export class GenericWiqlCompiler {
     const modeSection = `MODE (${mode})`;
 
     const parts = ['SELECT [System.Id] FROM WorkItemLinks', whereSection, asOfSection, orderSection, modeSection].filter(Boolean);
-    return { wiql: parts.join('\n'), warnings };
+    const wiql = parts.join('\n');
+
+    if (wiql.length > 32_000) {
+      warnings.push(
+        `Generated WIQL is ${wiql.length} chars; server limit is 32 768. Tighten filters or split the query.`
+      );
+    }
+
+    return { wiql, warnings };
   }
 
   private buildLinkNode(node: FilterNode, warnings: string[], prefix: 'Source' | 'Target'): string {
@@ -251,6 +285,7 @@ export class GenericWiqlCompiler {
       }
     }
 
+    if (typeof value === 'string') this.warnMacro(value, warnings);
     const fieldExpr = `[${prefix}].[${canonicalField}]`;
     return buildValueClause(fieldExpr, operator, value, fieldInfo?.type ?? 'string', this.catalog);
   }
@@ -360,6 +395,6 @@ import { SEED_FIELD_CATALOG } from './adoFields.js';
  * Create a compiler backed by the seed catalog.
  * Phase 5 overrides this with a discovered catalog per ADO collection.
  */
-export function createDefaultCompiler(allowUnknownFields: boolean): GenericWiqlCompiler {
-  return new GenericWiqlCompiler(SEED_FIELD_CATALOG, allowUnknownFields);
+export function createDefaultCompiler(allowUnknownFields: boolean, adoApiVersion = '7.0'): GenericWiqlCompiler {
+  return new GenericWiqlCompiler(SEED_FIELD_CATALOG, allowUnknownFields, adoApiVersion);
 }

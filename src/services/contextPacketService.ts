@@ -392,7 +392,7 @@ export class ContextPacketService {
     const normalizedValue = extractDisplayName(fieldValue) ?? String(fieldValue);
 
     try {
-      const compiler = createDefaultCompiler(this.config.adoAllowUnknownFields);
+      const compiler = createDefaultCompiler(this.config.adoAllowUnknownFields, this.config.adoApiVersion);
       const { wiql } = compiler.compile({
         project,
         filters: [{ field: fieldRef, operator: '=', value: normalizedValue }],

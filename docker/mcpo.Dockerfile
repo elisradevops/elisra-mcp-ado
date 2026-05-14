@@ -21,4 +21,4 @@ USER mcp
 EXPOSE 8000
 
 # MCPO_API_KEY is read by mcpo from the --api-key flag (passed via shell var substitution)
-ENTRYPOINT ["sh", "-c", "mcpo --port 8000 --api-key \"${MCPO_API_KEY:-changeme}\" -- node /app/dist/index.js"]
+ENTRYPOINT ["sh", "-c", "mcpo --port 8000 --api-key \"${MCPO_API_KEY:-changeme}\" --log-level warning -- node /app/dist/index.js"]

@@ -30,6 +30,8 @@ export interface WiqlExecuteOptions {
 
 export interface WiqlResult {
   ids: number[];
+  sourceIds: number[];
+  targetIds: number[];
   totalMatched: number;
   queryType: string;
 }
@@ -59,12 +61,15 @@ export class WiqlClient implements IWiqlClient {
       auth,
       params,
       data: { query: wiql },
+      apiVersionFallback: true,
     });
 
-    const ids = extractIds(response);
+    const extracted = extractIds(response);
     const result: WiqlResult = {
-      ids,
-      totalMatched: ids.length,
+      ids: extracted.allIds,
+      sourceIds: extracted.sourceIds,
+      targetIds: extracted.targetIds,
+      totalMatched: extracted.allIds.length,
       queryType: response.queryType ?? 'unknown',
     };
 
@@ -73,19 +78,32 @@ export class WiqlClient implements IWiqlClient {
   }
 }
 
-function extractIds(response: AdoWiqlResponse): number[] {
-  // Flat query
+interface ExtractedIds {
+  allIds: number[];
+  sourceIds: number[];
+  targetIds: number[];
+}
+
+function extractIds(response: AdoWiqlResponse): ExtractedIds {
+  // Flat query — no source/target distinction
   if (response.workItems && response.workItems.length > 0) {
-    return response.workItems.map((wi) => wi.id);
+    const ids = response.workItems.map((wi) => wi.id);
+    return { allIds: ids, sourceIds: ids, targetIds: [] };
   }
-  // Link/tree query — extract all unique IDs from source + target
+  // Link/tree query — preserve source and target separately
   if (response.workItemRelations) {
-    const seen = new Set<number>();
+    const sources = new Set<number>();
+    const targets = new Set<number>();
     for (const rel of response.workItemRelations) {
-      if (rel.source?.id) seen.add(rel.source.id);
-      if (rel.target?.id) seen.add(rel.target.id);
+      if (rel.source?.id) sources.add(rel.source.id);
+      if (rel.target?.id) targets.add(rel.target.id);
     }
-    return Array.from(seen);
+    const all = new Set<number>([...sources, ...targets]);
+    return {
+      allIds: Array.from(all),
+      sourceIds: Array.from(sources),
+      targetIds: Array.from(targets),
+    };
   }
-  return [];
+  return { allIds: [], sourceIds: [], targetIds: [] };
 }
