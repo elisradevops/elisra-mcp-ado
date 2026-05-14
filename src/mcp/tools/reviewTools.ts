@@ -21,6 +21,16 @@ const SourceSchema = z.discriminatedUnion('type', [
     filters: z.array(FieldFilterSchema).min(1).optional(),
     filterTree: FilterNodeSchema.optional(),
     orderBy: z.array(z.object({ field: z.string(), direction: z.enum(['ASC', 'DESC']) })).optional(),
+    asOf: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal('linkQuery'),
+    sourceFilter: FilterNodeSchema.optional(),
+    targetFilter: FilterNodeSchema.optional(),
+    linkTypes: z.array(z.string()).optional(),
+    mode: z.enum(['MustContain', 'MayContain', 'DoesNotContain', 'Recursive']),
+    orderBy: z.array(z.object({ field: z.string(), direction: z.enum(['ASC', 'DESC']) })).optional(),
+    asOf: z.string().optional(),
   }),
   z.object({
     type: z.literal('linkedItems'),

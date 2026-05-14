@@ -34,7 +34,10 @@ export class ReviewScopeResolver {
         return this.resolveIds(source.ids);
 
       case 'fieldFilters':
-        return this.resolveFieldFilters(scope.project, source.filters, source.filterTree, source.orderBy, auth);
+        return this.resolveFieldFilters(scope.project, source.filters, source.filterTree, source.orderBy, source.asOf, auth);
+
+      case 'linkQuery':
+        return this.resolveLinkQuery(scope.project, source, auth);
 
       case 'linkedItems':
         return this.resolveLinkedItems(scope.project, source.rootId, source.relationTypes, source.depth, auth);
@@ -120,6 +123,7 @@ export class ReviewScopeResolver {
     filters: FieldFilter[] | undefined,
     filterTree: FilterNode | undefined,
     orderBy: OrderBy[] | undefined,
+    asOf: string | undefined,
     auth: AuthContext
   ): Promise<ScopeResolution> {
     if (!project) {
@@ -127,7 +131,7 @@ export class ReviewScopeResolver {
     }
 
     const compiler = createDefaultCompiler(this.config.adoAllowUnknownFields);
-    const { wiql, warnings } = compiler.compile({ project, filters, filterTree, orderBy });
+    const { wiql, warnings } = compiler.compile({ project, filters, filterTree, orderBy, asOf });
 
     this.logger.debug(
       { project, sourceType: 'fieldFilters', usingFilterTree: !!filterTree, filterCount: filters?.length ?? 0 },
@@ -193,6 +197,47 @@ export class ReviewScopeResolver {
 
     if (this.config.adoEnableDebugOutput) {
       resolution.debugWiql = queryDef.wiql;
+    }
+
+    return resolution;
+  }
+
+  // ─── LinkQuery source ────────────────────────────────────────────────────────
+
+  private async resolveLinkQuery(
+    project: string | undefined,
+    source: import('../domain/reviewScope.js').LinkQuerySource,
+    auth: AuthContext
+  ): Promise<ScopeResolution> {
+    if (!project) {
+      throw projectRequired('linkQuery');
+    }
+
+    const compiler = createDefaultCompiler(this.config.adoAllowUnknownFields);
+    const { wiql, warnings } = compiler.compileLinkQuery({
+      project,
+      sourceFilter: source.sourceFilter,
+      targetFilter: source.targetFilter,
+      linkTypes: source.linkTypes,
+      mode: source.mode,
+      orderBy: source.orderBy,
+      asOf: source.asOf,
+    });
+
+    this.logger.debug({ project, sourceType: 'linkQuery', mode: source.mode }, 'Resolving linkQuery scope');
+
+    const result = await this.wiqlClient.execute({ project, wiql, auth });
+
+    const resolution: ScopeResolution = {
+      project,
+      sourceType: 'linkQuery',
+      ids: result.ids,
+      totalMatched: result.totalMatched,
+      warnings,
+    };
+
+    if (this.config.adoEnableDebugOutput) {
+      resolution.debugWiql = wiql;
     }
 
     return resolution;

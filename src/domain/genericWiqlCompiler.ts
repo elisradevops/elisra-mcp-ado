@@ -1,7 +1,7 @@
 import type { FieldFilter, FilterNode, FilterValue, OrderBy } from './fieldFilter.js';
 import type { FieldInfo } from './adoFields.js';
 import type { CaseInsensitiveMap } from '../utils/caseInsensitiveMap.js';
-import { formatScalarValue, formatArrayValue } from './wiqlEscape.js';
+import { formatScalarValue, formatArrayValue, formatAsOf } from './wiqlEscape.js';
 
 export interface CompileOptions {
   project?: string;
@@ -10,8 +10,22 @@ export interface CompileOptions {
   /** Explicit filter tree (OR/NOT/grouping). Wins over filters when both supplied. */
   filterTree?: FilterNode;
   orderBy?: OrderBy[];
-  /** Override default "SELECT [System.Id] FROM WorkItems" preamble. Used by PR-C link queries. */
+  /** ASOF clause — ISO date (2025-01-01) or WIQL macro (@Today - 7d). Emitted between WHERE and ORDER BY. */
+  asOf?: string;
+  /** Override default "SELECT [System.Id] FROM WorkItems" preamble. Used by link queries. */
   _selectFrom?: string;
+}
+
+export type LinkQueryMode = 'MustContain' | 'MayContain' | 'DoesNotContain' | 'Recursive';
+
+export interface LinkQueryOptions {
+  project?: string;
+  sourceFilter?: FilterNode;
+  targetFilter?: FilterNode;
+  linkTypes?: string[];
+  mode: LinkQueryMode;
+  orderBy?: OrderBy[];
+  asOf?: string;
 }
 
 export interface CompileResult {
@@ -32,7 +46,7 @@ export class GenericWiqlCompiler {
   ) {}
 
   compile(options: CompileOptions): CompileResult {
-    const { project, filters, filterTree, orderBy, _selectFrom = 'SELECT [System.Id] FROM WorkItems' } = options;
+    const { project, filters, filterTree, orderBy, asOf, _selectFrom = 'SELECT [System.Id] FROM WorkItems' } = options;
     const warnings: string[] = [];
 
     const clauses: string[] = [];
@@ -66,23 +80,14 @@ export class GenericWiqlCompiler {
     const whereSection =
       clauses.length > 0 ? `WHERE ${clauses.join('\n  AND ')}` : '';
 
-    if (orderBy) {
-      for (const o of orderBy) {
-        if (!/^[A-Za-z0-9_.]+$/.test(o.field)) {
-          throw new Error(`Invalid ORDER BY field: "${o.field}". Only alphanumeric, dot, and underscore characters are allowed.`);
-        }
-        if (o.direction !== 'ASC' && o.direction !== 'DESC') {
-          throw new Error(`Invalid ORDER BY direction: "${o.direction}". Must be ASC or DESC.`);
-        }
-      }
-    }
+    const asOfSection = asOf ? `ASOF ${formatAsOf(asOf)}` : '';
 
     const orderSection =
       orderBy && orderBy.length > 0
-        ? `ORDER BY ${orderBy.map((o) => `[${o.field}] ${o.direction}`).join(', ')}`
+        ? `ORDER BY ${validateAndFormatOrderBy(orderBy)}`
         : '';
 
-    const parts = [_selectFrom, whereSection, orderSection].filter(Boolean);
+    const parts = [_selectFrom, whereSection, asOfSection, orderSection].filter(Boolean);
     const wiql = parts.join('\n');
 
     return { wiql, warnings };
@@ -142,6 +147,113 @@ export class GenericWiqlCompiler {
         return `NOT (${this.buildNode(node.node, warnings)})`;
     }
   }
+
+  // ─── Link query compilation ──────────────────────────────────────────────────
+
+  compileLinkQuery(options: LinkQueryOptions): CompileResult {
+    const { project, sourceFilter, targetFilter, linkTypes, mode, orderBy, asOf } = options;
+    const warnings: string[] = [];
+
+    if (mode === 'Recursive') {
+      if (orderBy?.length) throw new Error('ORDER BY is not allowed with MODE (Recursive) in link queries.');
+      if (asOf) throw new Error('ASOF is not allowed with MODE (Recursive) in link queries.');
+    }
+
+    if (!sourceFilter && !targetFilter && !linkTypes?.length) {
+      throw new Error('linkQuery requires at least one of sourceFilter, targetFilter, or linkTypes.');
+    }
+
+    const clauses: string[] = [];
+
+    if (project) {
+      clauses.push('([Source].[System.TeamProject] = @project)');
+    }
+    if (sourceFilter) {
+      clauses.push(this.buildLinkNode(sourceFilter, warnings, 'Source'));
+    }
+    if (linkTypes?.length) {
+      const expr = linkTypes.length === 1
+        ? `[System.Links.LinkType] = ${formatScalarValue(linkTypes[0])}`
+        : `[System.Links.LinkType] IN ${formatArrayValue(linkTypes)}`;
+      clauses.push(expr);
+    }
+    if (targetFilter) {
+      clauses.push(this.buildLinkNode(targetFilter, warnings, 'Target'));
+    }
+
+    const whereSection = clauses.length > 0 ? `WHERE ${clauses.join('\n  AND ')}` : '';
+    const asOfSection = asOf ? `ASOF ${formatAsOf(asOf)}` : '';
+    const orderSection = orderBy?.length
+      ? `ORDER BY ${validateAndFormatOrderBy(orderBy)}`
+      : '';
+    const modeSection = `MODE (${mode})`;
+
+    const parts = ['SELECT [System.Id] FROM WorkItemLinks', whereSection, asOfSection, orderSection, modeSection].filter(Boolean);
+    return { wiql: parts.join('\n'), warnings };
+  }
+
+  private buildLinkNode(node: FilterNode, warnings: string[], prefix: 'Source' | 'Target'): string {
+    switch (node.kind) {
+      case 'condition':
+        return this.compileLinkFilter(node.field, node.operator, node.value, warnings, prefix);
+      case 'and':
+        return `(${node.nodes.map(n => this.buildLinkNode(n, warnings, prefix)).join(' AND ')})`;
+      case 'or':
+        return `(${node.nodes.map(n => this.buildLinkNode(n, warnings, prefix)).join(' OR ')})`;
+      case 'not':
+        return `NOT (${this.buildLinkNode(node.node, warnings, prefix)})`;
+    }
+  }
+
+  private compileLinkFilter(
+    inputField: string,
+    operator: string,
+    value: FilterValue | undefined,
+    warnings: string[],
+    prefix: 'Source' | 'Target'
+  ): string {
+    const fieldInfo = this.catalog.get(inputField);
+    const canonicalField = this.catalog.getCanonicalKey(inputField) ?? inputField;
+
+    if (!fieldInfo) {
+      if (!this.allowUnknownFields) {
+        throw new Error(
+          `Unknown field "${inputField}". ` +
+          `Use ado_discover_fields to see available fields, or set ADO_ALLOW_UNKNOWN_FIELDS=true to bypass validation.`
+        );
+      }
+      warnings.push(
+        `Field "${inputField}" is not in the known field catalog — treating as string. ` +
+        `Run ado_discover_fields to verify it exists in this collection.`
+      );
+    }
+
+    // WAS / WAS EVER are only valid in flat FROM WorkItems queries — ADO rejects them in link queries
+    if (operator === 'WAS' || operator === 'WAS EVER') {
+      throw new Error(
+        `Operator "${operator}" is not supported in link queries. ` +
+        `WAS and WAS EVER are only valid in flat WorkItems queries.`
+      );
+    }
+
+    if (fieldInfo) {
+      if (fieldInfo.isTreePath && operator === 'CONTAINS') {
+        throw new Error(
+          `CONTAINS is not supported for TreePath field "${canonicalField}". Use UNDER, NOT UNDER, =, or <> instead.`
+        );
+      }
+      if (!(fieldInfo.allowedOperators as readonly string[]).includes(operator)) {
+        const allowed = fieldInfo.allowedOperators.join(', ');
+        throw new Error(
+          `Operator "${operator}" is not valid for field "${canonicalField}" ` +
+          `(type: ${fieldInfo.type}). Allowed: ${allowed}.`
+        );
+      }
+    }
+
+    const fieldExpr = `[${prefix}].[${canonicalField}]`;
+    return buildValueClause(fieldExpr, operator, value, fieldInfo?.type ?? 'string', this.catalog);
+  }
 }
 
 // ─── Clause builder ───────────────────────────────────────────────────────────
@@ -154,40 +266,35 @@ function isFieldRef(v: FilterValue): v is { fieldRef: string } {
   return typeof v === 'object' && !Array.isArray(v) && 'fieldRef' in v;
 }
 
-function buildClause(
-  canonicalField: string,
+/** Shared value-formatting logic for both flat and link-query clause builders. */
+function buildValueClause(
+  fieldExpr: string,
   operator: string,
   value: FilterValue | undefined,
   typeHint: FieldTypeHint,
   catalog?: { get: (k: string) => unknown; getCanonicalKey: (k: string) => string | undefined }
 ): string {
-  if (/[[\]]/.test(canonicalField)) {
-    throw new Error(`Field name contains illegal bracket characters: "${canonicalField}"`);
-  }
-  const fieldExpr = `[${canonicalField}]`;
-
   if (operator === 'IS EMPTY' || operator === 'IS NOT EMPTY') {
     return `${fieldExpr} ${operator}`;
   }
 
   if (value === undefined || value === null) {
     throw new Error(
-      `Operator "${operator}" requires a value for field "${canonicalField}". ` +
+      `Operator "${operator}" requires a value for field "${fieldExpr}". ` +
       `Only IS EMPTY and IS NOT EMPTY can be used without a value.`
     );
   }
 
-  // Field-to-field comparison: { fieldRef: 'System.CreatedDate' }
   if (isFieldRef(value)) {
     if (!FIELD_TO_FIELD_OPERATORS.has(operator)) {
       throw new Error(
-        `Operator "${operator}" does not support field-to-field comparison for field "${canonicalField}". ` +
+        `Operator "${operator}" does not support field-to-field comparison for field "${fieldExpr}". ` +
         `Allowed operators for field refs: ${[...FIELD_TO_FIELD_OPERATORS].join(', ')}.`
       );
     }
     const refName = value.fieldRef;
     if (!refName.trim()) {
-      throw new Error(`fieldRef must be a non-empty field reference name for field "${canonicalField}".`);
+      throw new Error(`fieldRef must be a non-empty field reference name for field "${fieldExpr}".`);
     }
     if (/[[\]]/.test(refName)) {
       throw new Error(`fieldRef contains illegal bracket characters: "${refName}"`);
@@ -198,7 +305,6 @@ function buildClause(
 
   if (operator === 'IN' || operator === 'NOT IN') {
     if (!Array.isArray(value)) {
-      // Wrap scalar in array — permissive for UX
       value = [value as string | number] as string[] | number[];
     }
     const arr = value as string[] | number[];
@@ -207,7 +313,7 @@ function buildClause(
 
   if (Array.isArray(value)) {
     throw new Error(
-      `Operator "${operator}" requires a scalar value for field "${canonicalField}", not an array. ` +
+      `Operator "${operator}" requires a scalar value for field "${fieldExpr}", not an array. ` +
       `Use IN or NOT IN for multi-value filters.`
     );
   }
@@ -219,6 +325,31 @@ function buildClause(
       : formatScalarValue(scalar);
 
   return `${fieldExpr} ${operator} ${formatted}`;
+}
+
+function buildClause(
+  canonicalField: string,
+  operator: string,
+  value: FilterValue | undefined,
+  typeHint: FieldTypeHint,
+  catalog?: { get: (k: string) => unknown; getCanonicalKey: (k: string) => string | undefined }
+): string {
+  if (/[[\]]/.test(canonicalField)) {
+    throw new Error(`Field name contains illegal bracket characters: "${canonicalField}"`);
+  }
+  return buildValueClause(`[${canonicalField}]`, operator, value, typeHint, catalog);
+}
+
+function validateAndFormatOrderBy(orderBy: OrderBy[]): string {
+  for (const o of orderBy) {
+    if (!/^[A-Za-z0-9_.]+$/.test(o.field)) {
+      throw new Error(`Invalid ORDER BY field: "${o.field}". Only alphanumeric, dot, and underscore characters are allowed.`);
+    }
+    if (o.direction !== 'ASC' && o.direction !== 'DESC') {
+      throw new Error(`Invalid ORDER BY direction: "${o.direction}". Must be ASC or DESC.`);
+    }
+  }
+  return orderBy.map((o) => `[${o.field}] ${o.direction}`).join(', ');
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────

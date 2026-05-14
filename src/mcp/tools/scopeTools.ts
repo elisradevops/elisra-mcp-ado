@@ -40,6 +40,20 @@ const SourceSchema = z.discriminatedUnion('type', [
       'Structured filter tree supporting AND/OR/NOT grouping. Wins over filters when both supplied.'
     ),
     orderBy: z.array(OrderBySchema).optional(),
+    asOf: z.string().optional().describe('ASOF clause — ISO date (2025-01-01) or WIQL macro (@Today - 7d).'),
+  }),
+  z.object({
+    type: z.literal('linkQuery'),
+    sourceFilter: FilterNodeSchema.optional().describe('Filter conditions applied to source work items.'),
+    targetFilter: FilterNodeSchema.optional().describe('Filter conditions applied to target work items.'),
+    linkTypes: z.array(z.string()).optional().describe(
+      'Link type reference names to filter on (e.g. System.LinkTypes.Hierarchy-Forward, Elisra.CoveredBy-Forward). Omit for all link types.'
+    ),
+    mode: z.enum(['MustContain', 'MayContain', 'DoesNotContain', 'Recursive']).describe(
+      'Link traversal mode. Recursive performs recursive traversal; cannot be combined with orderBy or asOf.'
+    ),
+    orderBy: z.array(OrderBySchema).optional(),
+    asOf: z.string().optional().describe('ASOF clause. Not allowed with mode=Recursive.'),
   }),
   z.object({
     type: z.literal('linkedItems'),

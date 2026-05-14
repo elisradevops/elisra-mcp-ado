@@ -30,11 +30,12 @@ export function registerDebugTools(server: McpServer, deps: ToolDeps): void {
         field: z.string(),
         direction: z.enum(['ASC', 'DESC']),
       })).optional().describe('ORDER BY clause.'),
+      asOf: z.string().optional().describe('ASOF clause — ISO date (2025-01-01) or WIQL macro (@Today - 7d).'),
     },
-    ({ project, filters, filterTree, orderBy }) => {
+    ({ project, filters, filterTree, orderBy, asOf }) => {
       try {
         const compiler = createDefaultCompiler(config.adoAllowUnknownFields);
-        const { wiql, warnings } = compiler.compile({ project, filters, filterTree, orderBy });
+        const { wiql, warnings } = compiler.compile({ project, filters, filterTree, orderBy, asOf });
 
         return Promise.resolve({
           content: [{

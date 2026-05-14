@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { GenericWiqlCompiler, createDefaultCompiler } from '../../src/domain/genericWiqlCompiler.js';
 import { SEED_FIELD_CATALOG } from '../../src/domain/adoFields.js';
+import { OperatorSchema } from '../../src/domain/fieldFilter.js';
 
 function compiler(allowUnknown = false): GenericWiqlCompiler {
   return new GenericWiqlCompiler(SEED_FIELD_CATALOG, allowUnknown);
@@ -690,5 +691,272 @@ describe('GenericWiqlCompiler — filterTree (OR / NOT / grouping)', () => {
         },
       })
     ).toThrow(/not valid/);
+  });
+});
+
+describe('GenericWiqlCompiler — WAS operator (C3)', () => {
+  it('compiles WAS on System.State (history-tracked)', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.State', operator: 'WAS', value: 'Resolved' }],
+    });
+    expect(wiql).toContain("[System.State] WAS 'Resolved'");
+  });
+
+  it('compiles WAS on System.AssignedTo (history-tracked identity)', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.AssignedTo', operator: 'WAS', value: '@me' }],
+    });
+    expect(wiql).toContain('[System.AssignedTo] WAS @me');
+  });
+
+  it('compiles WAS on System.AreaPath (history-tracked treePath)', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.AreaPath', operator: 'WAS', value: 'MyProject\\TeamA' }],
+    });
+    expect(wiql).toContain("[System.AreaPath] WAS 'MyProject\\TeamA'");
+  });
+
+  it('rejects WAS on System.Title (not history-tracked)', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.Title', operator: 'WAS', value: 'old title' }],
+      })
+    ).toThrow(/not valid/);
+  });
+
+  it('rejects WAS on numeric field', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'Microsoft.VSTS.Common.Priority', operator: 'WAS', value: 2 }],
+      })
+    ).toThrow(/not valid/);
+  });
+
+  it('normalizes "was" to WAS via OperatorSchema', () => {
+    expect(OperatorSchema.parse('was')).toBe('WAS');
+  });
+});
+
+describe('GenericWiqlCompiler — ASOF clause (C2)', () => {
+  it('emits ASOF with ISO date between WHERE and ORDER BY', () => {
+    const { wiql } = compiler().compile({
+      project: 'P',
+      filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+      asOf: '2025-01-01',
+      orderBy: [{ field: 'System.Id', direction: 'DESC' }],
+    });
+    const lines = wiql.split('\n');
+    const asOfIdx = lines.findIndex(l => l.startsWith('ASOF'));
+    const orderIdx = lines.findIndex(l => l.startsWith('ORDER BY'));
+    expect(asOfIdx).toBeGreaterThan(-1);
+    expect(wiql).toContain("ASOF '2025-01-01'");
+    expect(asOfIdx).toBeLessThan(orderIdx);
+  });
+
+  it('emits ASOF with macro unquoted', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+      asOf: '@Today - 7d',
+    });
+    expect(wiql).toContain('ASOF @Today - 7d');
+    expect(wiql).not.toContain("'@Today");
+  });
+
+  it('rejects invalid ASOF value', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+        asOf: 'not-a-date',
+      })
+    ).toThrow(/Invalid ASOF/);
+  });
+
+  it('rejects unknown macro in ASOF', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+        asOf: '@Yesterday',
+      })
+    ).toThrow(/Unknown WIQL macro/);
+  });
+});
+
+describe('GenericWiqlCompiler — compileLinkQuery (C1)', () => {
+  it('emits SELECT FROM WorkItemLinks with MODE', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      project: 'P',
+      mode: 'MustContain',
+      sourceFilter: { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Feature' },
+    });
+    expect(wiql).toContain('SELECT [System.Id] FROM WorkItemLinks');
+    expect(wiql).toContain('MODE (MustContain)');
+  });
+
+  it('prefixes source fields with [Source].[...]', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      project: 'P',
+      mode: 'MustContain',
+      sourceFilter: { kind: 'condition', field: 'System.State', operator: '=', value: 'Active' },
+    });
+    expect(wiql).toContain("[Source].[System.State] = 'Active'");
+  });
+
+  it('prefixes target fields with [Target].[...]', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      mode: 'MayContain',
+      targetFilter: { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Test Plan' },
+    });
+    expect(wiql).toContain("[Target].[System.WorkItemType] = 'Test Plan'");
+  });
+
+  it('emits link type IN clause', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      mode: 'Recursive',
+      linkTypes: ['System.LinkTypes.Hierarchy-Forward', 'System.LinkTypes.Hierarchy-Reverse'],
+      sourceFilter: { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Feature' },
+    });
+    expect(wiql).toContain("[System.Links.LinkType] IN ('System.LinkTypes.Hierarchy-Forward', 'System.LinkTypes.Hierarchy-Reverse')");
+  });
+
+  it('emits single link type with = not IN', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      mode: 'Recursive',
+      linkTypes: ['System.LinkTypes.Hierarchy-Forward'],
+      sourceFilter: { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Feature' },
+    });
+    expect(wiql).toContain("[System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward'");
+  });
+
+  it('emits project clause as [Source].[System.TeamProject] = @project', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      project: 'MyProj',
+      mode: 'Recursive',
+      linkTypes: ['System.LinkTypes.Hierarchy-Forward'],
+    });
+    expect(wiql).toContain('[Source].[System.TeamProject] = @project');
+  });
+
+  it('Recursive mode rejects orderBy', () => {
+    expect(() =>
+      compiler().compileLinkQuery({
+        mode: 'Recursive',
+        linkTypes: ['System.LinkTypes.Hierarchy-Forward'],
+        orderBy: [{ field: 'System.Id', direction: 'ASC' }],
+      })
+    ).toThrow(/ORDER BY.*Recursive/);
+  });
+
+  it('Recursive mode rejects asOf', () => {
+    expect(() =>
+      compiler().compileLinkQuery({
+        mode: 'Recursive',
+        linkTypes: ['System.LinkTypes.Hierarchy-Forward'],
+        asOf: '2025-01-01',
+      })
+    ).toThrow(/ASOF.*Recursive/);
+  });
+
+  it('rejects empty linkQuery (no source, target, or linkTypes)', () => {
+    expect(() =>
+      compiler().compileLinkQuery({ mode: 'MustContain' })
+    ).toThrow(/at least one/);
+  });
+
+  it('MustContain with orderBy and asOf emits both', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      project: 'P',
+      mode: 'MustContain',
+      sourceFilter: { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Feature' },
+      orderBy: [{ field: 'System.Id', direction: 'DESC' }],
+      asOf: '2025-06-01',
+    });
+    expect(wiql).toContain("ASOF '2025-06-01'");
+    expect(wiql).toContain('ORDER BY [System.Id] DESC');
+    expect(wiql).toContain('MODE (MustContain)');
+    // ASOF before ORDER BY
+    expect(wiql.indexOf('ASOF')).toBeLessThan(wiql.indexOf('ORDER BY'));
+  });
+
+  it('source OR filter works with link prefix', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      mode: 'MustContain',
+      sourceFilter: {
+        kind: 'or',
+        nodes: [
+          { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Feature' },
+          { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Epic' },
+        ],
+      },
+    });
+    expect(wiql).toContain("([Source].[System.WorkItemType] = 'Feature' OR [Source].[System.WorkItemType] = 'Epic')");
+  });
+
+  it('validates source field operator via catalog in link query', () => {
+    expect(() =>
+      compiler().compileLinkQuery({
+        mode: 'MustContain',
+        sourceFilter: { kind: 'condition', field: 'System.State', operator: 'UNDER', value: 'path' },
+      })
+    ).toThrow(/not valid/);
+  });
+
+  it('rejects WAS in source filter (not valid in link queries)', () => {
+    expect(() =>
+      compiler().compileLinkQuery({
+        mode: 'MustContain',
+        sourceFilter: { kind: 'condition', field: 'System.State', operator: 'WAS', value: 'Resolved' },
+      })
+    ).toThrow(/not supported in link queries/);
+  });
+
+  it('rejects WAS EVER in target filter (not valid in link queries)', () => {
+    expect(() =>
+      compiler().compileLinkQuery({
+        mode: 'MustContain',
+        targetFilter: { kind: 'condition', field: 'System.AssignedTo', operator: 'WAS EVER', value: '@me' },
+      })
+    ).toThrow(/not supported in link queries/);
+  });
+
+  it('target OR filter uses Target prefix', () => {
+    const { wiql } = compiler().compileLinkQuery({
+      mode: 'MayContain',
+      targetFilter: {
+        kind: 'or',
+        nodes: [
+          { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Test Plan' },
+          { kind: 'condition', field: 'System.WorkItemType', operator: '=', value: 'Test Suite' },
+        ],
+      },
+    });
+    expect(wiql).toContain("([Target].[System.WorkItemType] = 'Test Plan' OR [Target].[System.WorkItemType] = 'Test Suite')");
+  });
+});
+
+describe('GenericWiqlCompiler — ASOF ISO validation', () => {
+  it('rejects out-of-range month', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+        asOf: '2025-13-01',
+      })
+    ).toThrow(/Invalid ASOF/);
+  });
+
+  it('rejects out-of-range day', () => {
+    expect(() =>
+      compiler().compile({
+        filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+        asOf: '2025-01-00',
+      })
+    ).toThrow(/Invalid ASOF/);
+  });
+
+  it('accepts valid ISO datetime with time component', () => {
+    const { wiql } = compiler().compile({
+      filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+      asOf: '2025-01-15T00:00:00Z',
+    });
+    expect(wiql).toContain("ASOF '2025-01-15T00:00:00Z'");
   });
 });

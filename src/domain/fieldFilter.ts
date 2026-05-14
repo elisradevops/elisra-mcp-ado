@@ -19,6 +19,7 @@ export type Operator =
   | 'NOT UNDER'
   | 'EVER'
   | 'WAS EVER'
+  | 'WAS'
   | 'IN GROUP'
   | 'NOT IN GROUP';
 
@@ -45,7 +46,7 @@ export const ALL_OPERATORS: readonly Operator[] = [
   'CONTAINS', 'DOES NOT CONTAIN', 'CONTAINS WORDS', 'DOES NOT CONTAIN WORDS',
   'IS EMPTY', 'IS NOT EMPTY',
   'UNDER', 'NOT UNDER',
-  'EVER', 'WAS EVER',
+  'EVER', 'WAS EVER', 'WAS',
   'IN GROUP', 'NOT IN GROUP',
 ] as const;
 
@@ -101,7 +102,7 @@ export const OperatorSchema = z.preprocess(
     'CONTAINS', 'DOES NOT CONTAIN', 'CONTAINS WORDS', 'DOES NOT CONTAIN WORDS',
     'IS EMPTY', 'IS NOT EMPTY',
     'UNDER', 'NOT UNDER',
-    'EVER', 'WAS EVER',
+    'EVER', 'WAS EVER', 'WAS',
     'IN GROUP', 'NOT IN GROUP',
   ])
 );

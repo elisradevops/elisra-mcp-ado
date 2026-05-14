@@ -1,4 +1,5 @@
 import type { FieldFilter, FilterNode, OrderBy } from './fieldFilter.js';
+import type { LinkQueryMode } from './genericWiqlCompiler.js';
 import type { AuthContext } from '../auth/authContext.js';
 
 // ─── Source types ─────────────────────────────────────────────────────────────
@@ -18,6 +19,17 @@ export interface FieldFiltersSource {
   filters?: FieldFilter[];
   filterTree?: FilterNode;
   orderBy?: OrderBy[];
+  asOf?: string;
+}
+
+export interface LinkQuerySource {
+  type: 'linkQuery';
+  sourceFilter?: FilterNode;
+  targetFilter?: FilterNode;
+  linkTypes?: string[];
+  mode: LinkQueryMode;
+  orderBy?: OrderBy[];
+  asOf?: string;
 }
 
 export interface LinkedItemsSource {
@@ -37,7 +49,8 @@ export type ReviewSource =
   | IdsSource
   | FieldFiltersSource
   | LinkedItemsSource
-  | SavedQuerySource;
+  | SavedQuerySource
+  | LinkQuerySource;
 
 export type ReviewSourceType = ReviewSource['type'];
 

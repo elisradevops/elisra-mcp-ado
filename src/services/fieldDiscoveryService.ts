@@ -82,6 +82,7 @@ function adoFieldToInfo(f: AdoFieldDefinition): FieldInfo {
     knownInDocGen: false,
     safeForFiltering: safeForFilteringDefault(type),
     safeForGrouping: safeForGroupingDefault(type),
+    historyTracked: false,
     source: 'discovered',
   };
 }
@@ -107,6 +108,11 @@ function mergeCatalogs(
       info.knownInDocGen = seedEntry.knownInDocGen;
       info.safeForFiltering = seedEntry.safeForFiltering;
       info.safeForGrouping = seedEntry.safeForGrouping;
+      // Preserve historyTracked so WAS operator stays valid on discovered history-tracked fields
+      if (seedEntry.historyTracked) {
+        info.historyTracked = true;
+        info.allowedOperators = [...info.allowedOperators, 'WAS'] as const;
+      }
     }
     merged.set(info.referenceName, info);
   }

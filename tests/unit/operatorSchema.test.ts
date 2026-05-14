@@ -59,7 +59,7 @@ describe('OperatorSchema — alias expansion', () => {
   });
 });
 
-describe('OperatorSchema — all 19 canonical tokens accepted', () => {
+describe('OperatorSchema — all 21 canonical tokens accepted', () => {
   const validTokens = [
     '=', '<>', '<', '<=', '>', '>=',
     'IN', 'NOT IN',
@@ -67,7 +67,7 @@ describe('OperatorSchema — all 19 canonical tokens accepted', () => {
     'CONTAINS WORDS', 'DOES NOT CONTAIN WORDS',
     'IS EMPTY', 'IS NOT EMPTY',
     'UNDER', 'NOT UNDER',
-    'EVER', 'WAS EVER',
+    'EVER', 'WAS EVER', 'WAS',
     'IN GROUP', 'NOT IN GROUP',
   ];
 

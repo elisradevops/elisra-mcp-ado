@@ -93,6 +93,24 @@ export function formatScalarValue(value: string | number | boolean): string {
   return quoteWiqlString(value);
 }
 
+const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(T[\d:.Z+\-]+)?$/;
+
+/**
+ * Validate and format an ASOF clause value.
+ * Accepts: WIQL macro (@Today, @Today - 7d) or ISO date (2025-01-01).
+ * Returns the formatted token — quoted for dates, unquoted for macros.
+ */
+export function formatAsOf(value: string): string {
+  const trimmed = value.trim();
+  if (isWiqlMacro(trimmed)) return validateMacro(trimmed);
+  if (!ISO_DATE_RE.test(trimmed)) {
+    throw new Error(
+      `Invalid ASOF value "${value}". Must be an ISO date (e.g. 2025-01-01) or a WIQL macro (e.g. @Today - 7d).`
+    );
+  }
+  return `'${trimmed}'`;
+}
+
 /**
  * Format an array of values for WIQL IN / NOT IN: `('a', 'b')` or `(1, 2)`.
  */
