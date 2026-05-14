@@ -51,10 +51,17 @@ const SourceSchema = z.discriminatedUnion('type', [
       'Common types: System.LinkTypes.Hierarchy-Forward (parent→child), System.LinkTypes.Hierarchy-Reverse (child→parent), ' +
       'System.LinkTypes.Related, System.LinkTypes.Affects-Forward, System.LinkTypes.Affects-Reverse, ' +
       'Microsoft.VSTS.Common.TestedBy-Forward, Microsoft.VSTS.Common.TestedBy-Reverse, ' +
-      'Elisra.CoveredBy-Forward (system req covers customer req), Elisra.CoveredBy-Reverse (customer req covered by system req).'
+      'Elisra.CoveredBy-Forward (system req covers customer req), Elisra.CoveredBy-Reverse (customer req covered by system req). ' +
+      'Customer work item ID is stored in field Custom.CustomerID (display name: "Customer ID").'
     ),
     mode: z.enum(['MustContain', 'MayContain', 'DoesNotContain', 'Recursive']).describe(
       'Link traversal mode. Recursive performs recursive traversal; cannot be combined with orderBy or asOf.'
+    ),
+    resultSide: z.enum(['source', 'target', 'both']).optional().default('source').describe(
+      'Which side of the WIQL link relation to return as the result set. ' +
+      'Default "source" — e.g. for a query with sourceFilter=Requirement and targetFilter=Test Case, ' +
+      'returns the Requirements. Use "target" to return the Test Cases; ' +
+      '"both" returns the full merged union (legacy behaviour, includes all linked work items).'
     ),
     orderBy: z.array(OrderBySchema).optional(),
     asOf: z.string().optional().describe('ASOF clause. Not allowed with mode=Recursive.'),

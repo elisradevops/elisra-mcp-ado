@@ -19,6 +19,7 @@ const baseConfig: AppConfig = {
   adoRequestTimeoutMs: 5000,
   adoAllowUnknownFields: false,
   adoFullResponseMaxItems: 50,
+  adoMaxReviewItems: 500,
   logLevel: 'silent' as unknown as AppConfig['logLevel'],
   mcpoApiKey: undefined,
   adoPat: undefined,
@@ -133,5 +134,144 @@ describe('AdoClient', () => {
     const client = makeClient(axiosInst);
     const url = client.buildUrl('_apis', 'projects');
     expect(url).toBe('https://tfs.example.com/tfs/DefaultCollection/_apis/projects');
+  });
+});
+
+describe('AdoClient — apiVersionFallback', () => {
+  let mock: MockAdapter;
+  let axiosInst: ReturnType<typeof axios.create>;
+
+  beforeEach(() => {
+    axiosInst = axios.create({ validateStatus: null });
+    mock = new MockAdapter(axiosInst);
+  });
+
+  afterEach(() => {
+    mock.restore();
+  });
+
+  it('succeeds without fallback when first version works', async () => {
+    let callCount = 0;
+    mock.onGet('https://tfs.example.com/endpoint').reply((cfg) => {
+      callCount++;
+      expect(cfg.params?.['api-version']).toBe('7.0');
+      return [200, { ok: true }];
+    });
+
+    const client = makeClient(axiosInst);
+    const result = await client.request<{ ok: boolean }>({
+      method: 'GET',
+      url: 'https://tfs.example.com/endpoint',
+      auth: AUTH,
+      params: { 'api-version': '7.0' },
+      apiVersionFallback: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(callCount).toBe(1);
+  });
+
+  it('steps down from 7.0 → 5.1 on 400', async () => {
+    let callCount = 0;
+    mock.onGet('https://tfs.example.com/endpoint').reply((cfg) => {
+      callCount++;
+      if (cfg.params?.['api-version'] === '7.0') return [400, {}];
+      if (cfg.params?.['api-version'] === '5.1') return [200, { version: '5.1' }];
+      return [500, {}];
+    });
+
+    const client = makeClient(axiosInst);
+    const result = await client.request<{ version: string }>({
+      method: 'GET',
+      url: 'https://tfs.example.com/endpoint',
+      auth: AUTH,
+      params: { 'api-version': '7.0' },
+      apiVersionFallback: true,
+    });
+    expect(result.version).toBe('5.1');
+    expect(callCount).toBe(2);
+  });
+
+  it('steps down through 7.0 → 5.1 → 4.1 → null on repeated 400s until success', async () => {
+    const acceptedVersions: Array<string | undefined> = [];
+    mock.onGet('https://tfs.example.com/endpoint').reply((cfg) => {
+      const v = cfg.params?.['api-version'];
+      if (v === '7.0' || v === '5.1') return [400, {}];
+      acceptedVersions.push(v);
+      return [200, { ok: true }];
+    });
+
+    const client = makeClient(axiosInst);
+    await client.request<{ ok: boolean }>({
+      method: 'GET',
+      url: 'https://tfs.example.com/endpoint',
+      auth: AUTH,
+      params: { 'api-version': '7.0' },
+      apiVersionFallback: true,
+    });
+    expect(acceptedVersions[0]).toBe('4.1');
+  });
+
+  it('does not trigger step-down on 401 (not in step-down set)', async () => {
+    let callCount = 0;
+    mock.onGet('https://tfs.example.com/endpoint').reply(() => {
+      callCount++;
+      return [401, {}];
+    });
+
+    const client = makeClient(axiosInst);
+    await expect(
+      client.request({
+        method: 'GET',
+        url: 'https://tfs.example.com/endpoint',
+        auth: AUTH,
+        params: { 'api-version': '7.0' },
+        apiVersionFallback: true,
+      })
+    ).rejects.toThrow();
+    // Only 1 call — 401 is not a step-down status
+    expect(callCount).toBe(1);
+  });
+
+  it('does not step down when apiVersionFallback is false (default)', async () => {
+    let callCount = 0;
+    mock.onGet('https://tfs.example.com/endpoint').reply(() => {
+      callCount++;
+      return [400, {}];
+    });
+
+    const client = makeClient(axiosInst);
+    await expect(
+      client.request({
+        method: 'GET',
+        url: 'https://tfs.example.com/endpoint',
+        auth: AUTH,
+        params: { 'api-version': '7.0' },
+        // apiVersionFallback omitted → defaults to undefined/false
+      })
+    ).rejects.toThrow();
+    expect(callCount).toBe(1);
+  });
+
+  it('starts step-down from configured version, not always from 7.1', async () => {
+    const triedVersions: Array<string | undefined> = [];
+    mock.onGet('https://tfs.example.com/endpoint').reply((cfg) => {
+      triedVersions.push(cfg.params?.['api-version']);
+      if (cfg.params?.['api-version'] === '4.1') return [200, { ok: true }];
+      return [400, {}];
+    });
+
+    const config: AppConfig = { ...baseConfig, adoApiVersion: '5.1' };
+    const client = new AdoClient(config, createSilentLogger(), axiosInst);
+    await client.request<{ ok: boolean }>({
+      method: 'GET',
+      url: 'https://tfs.example.com/endpoint',
+      auth: AUTH,
+      params: { 'api-version': '5.1' },
+      apiVersionFallback: true,
+    });
+    // Should NOT have tried 7.1 (starts at 5.1)
+    expect(triedVersions).not.toContain('7.1');
+    expect(triedVersions).toContain('5.1');
+    expect(triedVersions).toContain('4.1');
   });
 });

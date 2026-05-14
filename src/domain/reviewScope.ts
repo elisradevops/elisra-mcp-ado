@@ -22,6 +22,8 @@ export interface FieldFiltersSource {
   asOf?: string;
 }
 
+export type LinkQueryResultSide = 'source' | 'target' | 'both';
+
 export interface LinkQuerySource {
   type: 'linkQuery';
   sourceFilter?: FilterNode;
@@ -30,6 +32,7 @@ export interface LinkQuerySource {
   mode: LinkQueryMode;
   orderBy?: OrderBy[];
   asOf?: string;
+  resultSide?: LinkQueryResultSide;
 }
 
 export interface LinkedItemsSource {

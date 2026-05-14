@@ -45,9 +45,12 @@ export class QueriesClient implements IQueriesClient {
     const encodedQuery = segments.map((s) => encodeURIComponent(s)).join('/');
 
     const url = `${this.config.adoOrgUrl}/${encodedProject}/_apis/wit/queries/${encodedQuery}`;
-    const response = await this.client.get<AdoQueryResponse>(url, auth, {
-      'api-version': this.config.adoApiVersion,
-      '$expand': 'wiql',
+    const response = await this.client.request<AdoQueryResponse>({
+      method: 'GET',
+      url,
+      auth,
+      params: { 'api-version': this.config.adoApiVersion, '$expand': 'wiql' },
+      apiVersionFallback: true,
     });
 
     return {

@@ -289,3 +289,82 @@ describe('LinkTypeDiscoveryService — sort order', () => {
     expect(firstCustomIdx).toBeLessThan(firstSystemIdx);
   });
 });
+
+// ─── isForward / oppositeEndReferenceName propagation ────────────────────────
+
+function makeRelationTypeWithAttrs(
+  referenceName: string,
+  name: string,
+  extra: Partial<NonNullable<AdoWorkItemRelationType['attributes']>> = {}
+): AdoWorkItemRelationType {
+  return {
+    referenceName,
+    name,
+    attributes: { usage: 'workItemLink', ...extra },
+  };
+}
+
+describe('LinkTypeDiscoveryService — isForward / oppositeEndReferenceName', () => {
+  it('propagates isForward=true when ADO returns it', async () => {
+    const client = makeClient([
+      makeRelationTypeWithAttrs(
+        ADO_LINK_TYPES.HIERARCHY_FORWARD,
+        'Child',
+        { isForward: true, oppositeEndReferenceName: ADO_LINK_TYPES.HIERARCHY_REVERSE }
+      ),
+    ]);
+    const svc = new LinkTypeDiscoveryService(client);
+    const out = await svc.discover({ auth: mockAuth });
+
+    const entry = out.linkTypes.find((lt) => lt.referenceName === ADO_LINK_TYPES.HIERARCHY_FORWARD);
+    expect(entry).toBeDefined();
+    expect(entry!.isForward).toBe(true);
+    expect(entry!.oppositeEndReferenceName).toBe(ADO_LINK_TYPES.HIERARCHY_REVERSE);
+  });
+
+  it('propagates isForward=false for reverse direction', async () => {
+    const client = makeClient([
+      makeRelationTypeWithAttrs(
+        ADO_LINK_TYPES.HIERARCHY_REVERSE,
+        'Parent',
+        { isForward: false, oppositeEndReferenceName: ADO_LINK_TYPES.HIERARCHY_FORWARD }
+      ),
+    ]);
+    const svc = new LinkTypeDiscoveryService(client);
+    const out = await svc.discover({ auth: mockAuth });
+
+    const entry = out.linkTypes.find((lt) => lt.referenceName === ADO_LINK_TYPES.HIERARCHY_REVERSE);
+    expect(entry).toBeDefined();
+    expect(entry!.isForward).toBe(false);
+    expect(entry!.oppositeEndReferenceName).toBe(ADO_LINK_TYPES.HIERARCHY_FORWARD);
+  });
+
+  it('omits isForward / oppositeEndReferenceName when not provided by ADO', async () => {
+    const client = makeClient([
+      makeRelationType(ADO_LINK_TYPES.RELATED, 'Related'),
+    ]);
+    const svc = new LinkTypeDiscoveryService(client);
+    const out = await svc.discover({ auth: mockAuth });
+
+    const entry = out.linkTypes.find((lt) => lt.referenceName === ADO_LINK_TYPES.RELATED);
+    expect(entry).toBeDefined();
+    expect('isForward' in entry!).toBe(false);
+    expect('oppositeEndReferenceName' in entry!).toBe(false);
+  });
+
+  it('propagates for custom Elisra link types', async () => {
+    const client = makeClient([
+      makeRelationTypeWithAttrs(
+        ADO_LINK_TYPES.ELISRA_COVERED_BY_FORWARD,
+        'Covered by',
+        { isForward: true, oppositeEndReferenceName: ADO_LINK_TYPES.ELISRA_COVERED_BY_REVERSE }
+      ),
+    ]);
+    const svc = new LinkTypeDiscoveryService(client);
+    const out = await svc.discover({ auth: mockAuth });
+
+    const entry = out.linkTypes.find((lt) => lt.referenceName === ADO_LINK_TYPES.ELISRA_COVERED_BY_FORWARD);
+    expect(entry?.isForward).toBe(true);
+    expect(entry?.oppositeEndReferenceName).toBe(ADO_LINK_TYPES.ELISRA_COVERED_BY_REVERSE);
+  });
+});

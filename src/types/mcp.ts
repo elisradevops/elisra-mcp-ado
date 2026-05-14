@@ -53,6 +53,8 @@ export interface AdoDiscoverLinkTypesOutput {
     isCustom: boolean;
     knownInDocGen: boolean;
     semanticHint?: string;
+    isForward?: boolean;
+    oppositeEndReferenceName?: string;
     source: 'discovered' | 'seed' | 'both';
   }>;
   warnings: string[];

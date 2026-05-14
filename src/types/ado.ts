@@ -101,6 +101,8 @@ export interface AdoWorkItemRelationType {
     directional?: boolean;
     singleTarget?: boolean;
     topology?: 'tree' | 'network' | 'directedNetwork' | 'dependency' | string;
+    isForward?: boolean;
+    oppositeEndReferenceName?: string;
   };
   url?: string;
 }

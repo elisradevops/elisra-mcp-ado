@@ -30,9 +30,15 @@ const SourceSchema = z.discriminatedUnion('type', [
     linkTypes: z.array(z.string()).optional().describe(
       'Link type reference names. Common: System.LinkTypes.Hierarchy-Forward/Reverse, System.LinkTypes.Related, ' +
       'System.LinkTypes.Affects-Forward/Reverse, Microsoft.VSTS.Common.TestedBy-Forward/Reverse, ' +
-      'Elisra.CoveredBy-Forward (system covers customer req), Elisra.CoveredBy-Reverse (customer req covered by system).'
+      'Elisra.CoveredBy-Forward (system covers customer req), Elisra.CoveredBy-Reverse (customer req covered by system). ' +
+      'Customer work item ID is stored in field Custom.CustomerID (display name: "Customer ID").'
     ),
     mode: z.enum(['MustContain', 'MayContain', 'DoesNotContain', 'Recursive']),
+    resultSide: z.enum(['source', 'target', 'both']).optional().default('source').describe(
+      'Which side of the WIQL link relation to return. Default "source". ' +
+      'E.g. sourceFilter=Requirement + targetFilter=Test Case with "source" → reviews Requirements; ' +
+      '"target" → reviews Test Cases; "both" → full merged union (legacy).'
+    ),
     orderBy: z.array(z.object({ field: z.string(), direction: z.enum(['ASC', 'DESC']) })).optional(),
     asOf: z.string().optional(),
   }),

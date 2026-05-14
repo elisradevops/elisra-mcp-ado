@@ -960,3 +960,101 @@ describe('GenericWiqlCompiler — ASOF ISO validation', () => {
     expect(wiql).toContain("ASOF '2025-01-15T00:00:00Z'");
   });
 });
+
+// ─── TFS 2018 macro version warnings ────────────────────────────────────────
+
+describe('GenericWiqlCompiler — @StartOf* macro version warnings', () => {
+  function compilerFor(apiVersion: string, allowUnknown = false): GenericWiqlCompiler {
+    return new GenericWiqlCompiler(SEED_FIELD_CATALOG, allowUnknown, apiVersion);
+  }
+
+  it('emits warning for @StartOfMonth when ADO_API_VERSION=4.1', () => {
+    const { warnings } = compilerFor('4.1').compile({
+      filters: [],
+      asOf: '@StartOfMonth',
+    });
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0]).toContain('@StartOfMonth');
+    expect(warnings[0]).toContain('4.1');
+    expect(warnings[0]).toContain('5.0');
+  });
+
+  it('emits warning for @StartOfDay when ADO_API_VERSION=4.1', () => {
+    const { warnings } = compilerFor('4.1').compile({ filters: [], asOf: '@StartOfDay' });
+    expect(warnings.some((w) => w.includes('@StartOfDay'))).toBe(true);
+  });
+
+  it('emits warning for @StartOfWeek when ADO_API_VERSION=4.1', () => {
+    const { warnings } = compilerFor('4.1').compile({ filters: [], asOf: '@StartOfWeek' });
+    expect(warnings.some((w) => w.includes('@StartOfWeek'))).toBe(true);
+  });
+
+  it('emits warning for @StartOfYear when ADO_API_VERSION=4.1', () => {
+    const { warnings } = compilerFor('4.1').compile({ filters: [], asOf: '@StartOfYear' });
+    expect(warnings.some((w) => w.includes('@StartOfYear'))).toBe(true);
+  });
+
+  it('does NOT emit macro warning when ADO_API_VERSION=7.0', () => {
+    const { warnings } = compilerFor('7.0').compile({ filters: [], asOf: '@StartOfMonth' });
+    const macroWarnings = warnings.filter((w) => w.includes('@StartOf'));
+    expect(macroWarnings).toHaveLength(0);
+  });
+
+  it('does NOT emit macro warning for @Today (works on all versions)', () => {
+    const { warnings } = compilerFor('4.1').compile({ filters: [], asOf: '@Today - 7d' });
+    const macroWarnings = warnings.filter((w) => w.includes('@Today'));
+    expect(macroWarnings).toHaveLength(0);
+  });
+
+  it('emits macro warning when @StartOfMonth used as filter value on ADO_API_VERSION=4.1', () => {
+    const { warnings } = compilerFor('4.1').compile({
+      filters: [{ field: 'System.ChangedDate', operator: '>=', value: '@StartOfMonth' }],
+    });
+    expect(warnings.some((w) => w.includes('@StartOfMonth'))).toBe(true);
+  });
+
+  it('does NOT emit macro warning for filter value @StartOfMonth on ADO_API_VERSION=7.0', () => {
+    const { warnings } = compilerFor('7.0').compile({
+      filters: [{ field: 'System.ChangedDate', operator: '>=', value: '@StartOfMonth' }],
+    });
+    expect(warnings.filter((w) => w.includes('@StartOf'))).toHaveLength(0);
+  });
+});
+
+// ─── WIQL 32K size warning ────────────────────────────────────────────────────
+
+describe('GenericWiqlCompiler — WIQL size warning', () => {
+  it('emits size warning when generated WIQL exceeds 32 000 chars', () => {
+    // Each value is 40 chars; with quotes+separator ≈ 44 chars each.
+    // 800 × 44 = 35 200 — safely over the 32 000 threshold.
+    const manyValues = Array.from({ length: 800 }, (_, i) => `x${i}`.padEnd(40, 'a'));
+    const { warnings } = compiler(true).compile({
+      filters: [{ field: 'System.State', operator: 'IN', value: manyValues }],
+    });
+    const sizeWarning = warnings.find((w) => w.includes('32 768'));
+    expect(sizeWarning).toBeDefined();
+    expect(sizeWarning).toContain('chars');
+  });
+
+  it('does NOT emit size warning for normal-length WIQL', () => {
+    const { warnings } = compiler().compile({
+      project: 'MyProject',
+      filters: [{ field: 'System.State', operator: '=', value: 'Active' }],
+    });
+    expect(warnings.filter((w) => w.includes('32 768'))).toHaveLength(0);
+  });
+});
+
+describe('createDefaultCompiler — forwards adoApiVersion', () => {
+  it('passes adoApiVersion so macro warnings fire correctly', () => {
+    const c = createDefaultCompiler(false, '4.1');
+    const { warnings } = c.compile({ filters: [], asOf: '@StartOfMonth' });
+    expect(warnings.some((w) => w.includes('@StartOfMonth'))).toBe(true);
+  });
+
+  it('uses 7.0 default — no warnings for @StartOfMonth', () => {
+    const c = createDefaultCompiler(false);
+    const { warnings } = c.compile({ filters: [], asOf: '@StartOfMonth' });
+    expect(warnings.filter((w) => w.includes('@StartOf'))).toHaveLength(0);
+  });
+});

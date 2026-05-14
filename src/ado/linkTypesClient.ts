@@ -11,8 +11,12 @@ export class LinkTypesClient {
 
   async listRelationTypes(auth: AuthContext): Promise<AdoWorkItemRelationType[]> {
     const url = `${this.config.adoOrgUrl}/_apis/wit/workItemRelationTypes`;
-    const response = await this.client.get<AdoWorkItemRelationTypesResponse>(url, auth, {
-      'api-version': this.config.adoApiVersion,
+    const response = await this.client.request<AdoWorkItemRelationTypesResponse>({
+      method: 'GET',
+      url,
+      auth,
+      params: { 'api-version': this.config.adoApiVersion },
+      apiVersionFallback: true,
     });
     return response.value ?? [];
   }

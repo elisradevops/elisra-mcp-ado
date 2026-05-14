@@ -130,7 +130,7 @@ export class ReviewScopeResolver {
       throw projectRequired('fieldFilters');
     }
 
-    const compiler = createDefaultCompiler(this.config.adoAllowUnknownFields);
+    const compiler = createDefaultCompiler(this.config.adoAllowUnknownFields, this.config.adoApiVersion);
     const { wiql, warnings } = compiler.compile({ project, filters, filterTree, orderBy, asOf });
 
     this.logger.debug(
@@ -213,7 +213,7 @@ export class ReviewScopeResolver {
       throw projectRequired('linkQuery');
     }
 
-    const compiler = createDefaultCompiler(this.config.adoAllowUnknownFields);
+    const compiler = createDefaultCompiler(this.config.adoAllowUnknownFields, this.config.adoApiVersion);
     const { wiql, warnings } = compiler.compileLinkQuery({
       project,
       sourceFilter: source.sourceFilter,
@@ -228,11 +228,17 @@ export class ReviewScopeResolver {
 
     const result = await this.wiqlClient.execute({ project, wiql, auth });
 
+    const side = source.resultSide ?? 'source';
+    const ids =
+      side === 'source' ? result.sourceIds
+      : side === 'target' ? result.targetIds
+      : result.ids;
+
     const resolution: ScopeResolution = {
       project,
       sourceType: 'linkQuery',
-      ids: result.ids,
-      totalMatched: result.totalMatched,
+      ids,
+      totalMatched: ids.length,
       warnings,
     };
 

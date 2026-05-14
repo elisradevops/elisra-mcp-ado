@@ -39,25 +39,41 @@ The ADO REST API has two path families:
 
 Azure DevOps Server and TFS versions vary widely in on-premises deployments. Newer API versions are rejected by older TFS instances with `400 Bad Request`, `404 Not Found`, `405 Method Not Allowed`, or `410 Gone`.
 
-`ADO_API_VERSION` sets the preferred version (default: `7.0`). When a request is rejected with one of the step-down status codes, the server automatically retries with the next version in the ladder:
+`ADO_API_VERSION` sets the preferred version (default: `7.0`). When a request is rejected with one of the step-down status codes (`400`, `404`, `405`, `406`, `410`), the server automatically retries with the next version in the ladder:
 
 ```
-7.1  →  5.1  →  (no api-version parameter)
+configured version  →  5.1  →  4.1  →  (no api-version parameter)
 ```
 
-This ladder is defined in `src/ado/apiVersionLadder.ts`. The step-down logic applies per-request — if a particular endpoint rejects `7.1` but accepts `5.1`, subsequent requests to the same endpoint continue to use `5.1` within that ladder traversal.
+This ladder is defined in `src/ado/apiVersionLadder.ts`. The fallback is opt-in per request — all ADO clients in this server (`wiqlClient`, `workItemsClient`, `fieldsClient`, `linkTypesClient`, `queriesClient`, `projectsClient`) use it. The step-down happens only when the configured version is rejected; if `7.0` is accepted, no fallback fires.
 
 Recommended setting by TFS/ADO Server version:
 
 | Server version | Recommended `ADO_API_VERSION` |
 |---|---|
-| Azure DevOps Server 2022 | `7.0` |
+| Azure DevOps Server 2022 | `7.0` (default) |
 | Azure DevOps Server 2020 | `6.0` or `7.0` (ladder handles downgrade) |
 | Azure DevOps Server 2019 | `5.1` |
-| TFS 2018 | `4.1` (set explicitly; ladder may not reach it) |
+| **TFS 2018** | **`4.1`** — set this explicitly; POST `workitemsbatch` is not available on TFS 2018 and the work-item batch path automatically switches to `GET /_apis/wit/workitems?ids=...` when `ADO_API_VERSION` is below `5.0`. |
 | TFS 2017 and older | `3.0` (set explicitly) |
 
-If you experience consistent failures with a specific TFS version, set `ADO_API_VERSION` explicitly to a version that version is known to support.
+**TFS 2018 notes:**
+
+- Set `ADO_API_VERSION=4.1` in `.env`. With this setting the batch work-item read path uses `GET /_apis/wit/workitems?ids=...` automatically — no code change required.
+- The `@StartOfDay`, `@StartOfWeek`, `@StartOfMonth`, and `@StartOfYear` WIQL macros were added in ADO Server 2019. When these macros appear in a scope query and `ADO_API_VERSION` is below `5.0`, the tools emit a warning in the response `warnings[]` array explaining the potential incompatibility. The macro is still sent to the server as-is; TFS 2018 returns a WIQL parse error if it cannot evaluate it.
+- If you experience consistent failures with a specific TFS version, set `ADO_API_VERSION` explicitly to a version that version is known to support.
+
+---
+
+## WIQL size limit
+
+ADO Server enforces a hard limit of **32 768 characters** on WIQL query strings. When a generated query exceeds **32 000 characters** (a conservative client-side threshold), the tools emit a warning in the `warnings[]` array:
+
+```
+Generated WIQL is NNNNN chars; server limit is 32 768. Tighten filters or split the query.
+```
+
+The query is still sent to the server — the warning is informational. If the server returns a 400 error for a very large query, reducing the number of filter values or splitting the scope into two smaller queries will resolve it.
 
 ---
 

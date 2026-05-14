@@ -10,7 +10,7 @@ async function main(): Promise<void> {
   try {
     config = loadConfig();
   } catch (err) {
-    boot.fatal({ err }, 'Configuration error — cannot start');
+    boot.error({ err }, 'Configuration error — cannot start');
     process.exit(1);
   }
 
@@ -19,12 +19,12 @@ async function main(): Promise<void> {
   try {
     await createStdioServer(config, logger);
   } catch (err) {
-    logger.fatal({ err }, 'Failed to start MCP stdio server');
+    logger.error({ err }, 'Failed to start MCP stdio server');
     process.exit(1);
   }
 }
 
 main().catch((err: unknown) => {
-  boot.fatal({ err }, 'Unhandled startup error');
+  boot.error({ err }, 'Unhandled startup error');
   process.exit(1);
 });

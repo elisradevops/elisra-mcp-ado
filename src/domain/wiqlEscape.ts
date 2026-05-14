@@ -14,6 +14,22 @@ const VALID_MACRO_NAMES = new Set([
 // Matches: @Name, @Name('arg'), @Name ± N[d|w|mo|y] (digits capped at 4 to block absurd offsets)
 const MACRO_RE = /^@([A-Za-z][A-Za-z0-9]*)(\('[^']+'\))?(\s*[+-]\s*\d{1,4}\s*(?:d|w|mo|y)?)?$/;
 
+// @StartOf* macros were added in ADO Server 2019 (api-version 5.0).
+const MACRO_MIN_API_VERSION: Record<string, string> = {
+  startofday: '5.0',
+  startofweek: '5.0',
+  startofmonth: '5.0',
+  startofyear: '5.0',
+};
+
+/**
+ * Return the minimum api-version required for a given macro name (lower-cased).
+ * Returns null for macros that work on all supported TFS/ADO versions.
+ */
+export function getMacroMinApiVersion(name: string): string | null {
+  return MACRO_MIN_API_VERSION[name.toLowerCase()] ?? null;
+}
+
 /**
  * Validate a WIQL macro string against the allow-list.
  * Returns the trimmed value on success; throws on unknown name or malformed syntax.
