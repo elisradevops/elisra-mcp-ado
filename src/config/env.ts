@@ -33,6 +33,7 @@ const envSchema = z.object({
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
     .default('info'),
+  LOG_FILE: z.string().optional(),
   MCPO_API_KEY: z.string().optional(),
   ADO_PAT: z.string().optional(),
 });
@@ -52,6 +53,7 @@ function mapToConfig(env: ParsedEnv): AppConfig {
     adoFullResponseMaxItems: env.ADO_FULL_RESPONSE_MAX_ITEMS,
     adoMaxReviewItems: env.ADO_MAX_REVIEW_ITEMS,
     logLevel: env.LOG_LEVEL,
+    logFile: env.LOG_FILE,
     mcpoApiKey: env.MCPO_API_KEY,
     adoPat: env.ADO_PAT,
   };

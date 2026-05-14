@@ -10,6 +10,7 @@ export interface AppConfig {
   adoFullResponseMaxItems: number;
   adoMaxReviewItems: number;
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
+  logFile?: string;
   mcpoApiKey?: string;
   adoPat?: string;
 }

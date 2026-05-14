@@ -245,3 +245,57 @@ ADO_BATCH_SIZE=50
 ```env
 ADO_REQUEST_TIMEOUT_MS=60000
 ```
+
+---
+
+## 13. mcpo bridge crashes with `McpError: Connection closed`
+
+**Symptom**: The `elisra-mcp-ado-mcpo` container enters `CrashLoopBackOff` (k8s) or exits immediately (Docker). Logs from the mcpo container show:
+
+```
+McpError: Connection closed
+```
+
+The MCP server's own startup log may be missing or incomplete because mcpo discards the Node child's stderr in some failure modes.
+
+**Diagnosis**:
+
+1. Read the persisted Node stderr log from inside the container:
+   ```bash
+   kubectl exec <pod-name> -- cat /app/logs/mcp.stderr
+   # or locally:
+   docker exec elisra-mcp-ado-mcpo cat /app/logs/mcp.stderr
+   ```
+   This file is written by the Node process (via the `LOG_FILE` env) and survives container restarts in the same container lifecycle.
+
+2. Check the HEALTHCHECK status:
+   ```bash
+   docker inspect --format='{{.State.Health.Status}}' elisra-mcp-ado-mcpo
+   ```
+   `unhealthy` after startup confirms the Node child failed during init even though the container is still running.
+
+3. Confirm the `MCPO_VERSION` build arg matches the pinned version:
+   ```bash
+   docker inspect elisradevops/elisra-mcp-ado-mcpo:latest | grep -A1 MCPO_VERSION
+   ```
+   An unpinned (`pip install mcpo` without a version) or downgraded version may behave differently.
+
+4. Confirm the ENTRYPOINT has no extra flags after `--api-key`:
+   ```bash
+   docker inspect --format='{{json .Config.Entrypoint}}' elisradevops/elisra-mcp-ado-mcpo:latest
+   ```
+   The expected output is:
+   ```json
+   ["sh","-c","mcpo --port 8000 --api-key \"${MCPO_API_KEY:-changeme}\" -- node /app/dist/index.js"]
+   ```
+   **If `--log-level <level>` appears before `--`**, remove it and rebuild. That flag is forwarded to uvicorn and crashes the child-process supervisor in the pinned mcpo version.
+
+**Known causes**:
+
+| Cause | Indicator | Fix |
+|---|---|---|
+| `--log-level` flag in ENTRYPOINT | Crash immediately after init, no Node log | Remove flag, rebuild image |
+| `ADO_ORG_URL` missing or invalid | `Configuration validation failed` in `/app/logs/mcp.stderr` | Set a valid HTTPS URL in env |
+| `ADO_AUTH_MODE=server_pat` without `ADO_PAT` | `ADO_PAT is required` in stderr | Set `ADO_PAT` or switch to `per_request_pat` |
+| Wrong mcpo version | Crash after upgrade with no code change | Pin `MCPO_VERSION` and rebuild |
+| Schema compat failure | `AssertionError: Custom field not found` in mcpo logs | Ensure image is built from current source (schemaCompat recursive walk fix is in ≥0.5.2) |

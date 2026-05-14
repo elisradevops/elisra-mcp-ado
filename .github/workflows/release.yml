@@ -64,7 +64,6 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            elisradevops/elisra-mcp-ado:latest
             elisradevops/elisra-mcp-ado:${{ steps.bump.outputs.newTag }}
             elisradevops/elisra-mcp-ado:${{ github.sha }}
           cache-from: type=gha
@@ -78,7 +77,44 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            elisradevops/elisra-mcp-ado-mcpo:latest
             elisradevops/elisra-mcp-ado-mcpo:${{ steps.bump.outputs.newTag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Smoke-test mcpo bridge image
+        run: |
+          docker pull --platform linux/amd64 \
+            elisradevops/elisra-mcp-ado-mcpo:${{ steps.bump.outputs.newTag }}
+          docker run -d --name mcpo-smoke \
+            -e ADO_AUTH_MODE=per_request_pat \
+            -e ADO_ORG_URL=https://example.invalid/tfs/Dummy \
+            -e MCPO_API_KEY=ci-smoke \
+            -p 8000:8000 \
+            elisradevops/elisra-mcp-ado-mcpo:${{ steps.bump.outputs.newTag }}
+          for i in $(seq 1 30); do
+            if curl -fsS -H "Authorization: Bearer ci-smoke" \
+                http://127.0.0.1:8000/openapi.json > /tmp/openapi.json 2>/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          if [ ! -s /tmp/openapi.json ]; then
+            echo "Smoke FAILED: mcpo did not respond on /openapi.json after 60s"
+            exit 1
+          fi
+          jq -e '.paths | type == "object" and (keys | length) > 0' /tmp/openapi.json
+
+      - name: Cleanup smoke container
+        if: always()
+        run: |
+          docker logs mcpo-smoke 2>&1 || true
+          docker rm -f mcpo-smoke 2>/dev/null || true
+
+      - name: Promote both images to :latest
+        run: |
+          docker buildx imagetools create \
+            --tag elisradevops/elisra-mcp-ado:latest \
+            elisradevops/elisra-mcp-ado:${{ steps.bump.outputs.newTag }}
+          docker buildx imagetools create \
+            --tag elisradevops/elisra-mcp-ado-mcpo:latest \
+            elisradevops/elisra-mcp-ado-mcpo:${{ steps.bump.outputs.newTag }}

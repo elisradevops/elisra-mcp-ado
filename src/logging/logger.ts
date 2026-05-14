@@ -58,7 +58,15 @@ const redactFormat = winston.format((info) => {
   return deepRedact(info) as typeof info;
 });
 
-export function createLogger(config: Pick<AppConfig, 'logLevel' | 'adoEnableDebugOutput'>): Logger {
+export function createLogger(config: Pick<AppConfig, 'logLevel' | 'adoEnableDebugOutput' | 'logFile'>): Logger {
+  const transports: winston.transport[] = [
+    new winston.transports.Console({
+      stderrLevels: Object.keys(LOG_LEVELS),
+    }),
+  ];
+  if (config.logFile) {
+    transports.push(new winston.transports.File({ filename: config.logFile }));
+  }
   const inner = winston.createLogger({
     levels: LOG_LEVELS,
     level: config.logLevel,
@@ -67,11 +75,7 @@ export function createLogger(config: Pick<AppConfig, 'logLevel' | 'adoEnableDebu
       redactFormat(),
       winston.format.json(),
     ),
-    transports: [
-      new winston.transports.Console({
-        stderrLevels: Object.keys(LOG_LEVELS),
-      }),
-    ],
+    transports,
   });
   return inner as unknown as Logger;
 }
