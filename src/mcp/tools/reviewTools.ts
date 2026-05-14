@@ -27,7 +27,11 @@ const SourceSchema = z.discriminatedUnion('type', [
     type: z.literal('linkQuery'),
     sourceFilter: FilterNodeSchema.optional(),
     targetFilter: FilterNodeSchema.optional(),
-    linkTypes: z.array(z.string()).optional(),
+    linkTypes: z.array(z.string()).optional().describe(
+      'Link type reference names. Common: System.LinkTypes.Hierarchy-Forward/Reverse, System.LinkTypes.Related, ' +
+      'System.LinkTypes.Affects-Forward/Reverse, Microsoft.VSTS.Common.TestedBy-Forward/Reverse, ' +
+      'Elisra.CoveredBy-Forward (system covers customer req), Elisra.CoveredBy-Reverse (customer req covered by system).'
+    ),
     mode: z.enum(['MustContain', 'MayContain', 'DoesNotContain', 'Recursive']),
     orderBy: z.array(z.object({ field: z.string(), direction: z.enum(['ASC', 'DESC']) })).optional(),
     asOf: z.string().optional(),

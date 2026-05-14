@@ -47,7 +47,11 @@ const SourceSchema = z.discriminatedUnion('type', [
     sourceFilter: FilterNodeSchema.optional().describe('Filter conditions applied to source work items.'),
     targetFilter: FilterNodeSchema.optional().describe('Filter conditions applied to target work items.'),
     linkTypes: z.array(z.string()).optional().describe(
-      'Link type reference names to filter on (e.g. System.LinkTypes.Hierarchy-Forward, Elisra.CoveredBy-Forward). Omit for all link types.'
+      'Link type reference names to filter on. Omit for all link types. ' +
+      'Common types: System.LinkTypes.Hierarchy-Forward (parent→child), System.LinkTypes.Hierarchy-Reverse (child→parent), ' +
+      'System.LinkTypes.Related, System.LinkTypes.Affects-Forward, System.LinkTypes.Affects-Reverse, ' +
+      'Microsoft.VSTS.Common.TestedBy-Forward, Microsoft.VSTS.Common.TestedBy-Reverse, ' +
+      'Elisra.CoveredBy-Forward (system req covers customer req), Elisra.CoveredBy-Reverse (customer req covered by system req).'
     ),
     mode: z.enum(['MustContain', 'MayContain', 'DoesNotContain', 'Recursive']).describe(
       'Link traversal mode. Recursive performs recursive traversal; cannot be combined with orderBy or asOf.'

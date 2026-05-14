@@ -41,6 +41,23 @@ export interface AdoDiscoverFieldsOutput {
   warnings: string[];
 }
 
+// ado_discover_link_types
+export interface AdoDiscoverLinkTypesOutput {
+  totalLinkTypes: number;
+  source: 'discovered' | 'seed_fallback';
+  linkTypes: Array<{
+    referenceName: string;
+    name: string;
+    usage: string;
+    isWorkItemLink: boolean;
+    isCustom: boolean;
+    knownInDocGen: boolean;
+    semanticHint?: string;
+    source: 'discovered' | 'seed' | 'both';
+  }>;
+  warnings: string[];
+}
+
 // ado_check_pat
 export const AdoCheckPatInputSchema = z.object({
   auth: AuthInputSchema,

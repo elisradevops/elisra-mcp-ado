@@ -4,10 +4,12 @@ import type { Logger } from '../../logging/logger.js';
 import { AdoClient } from '../../ado/adoClient.js';
 import { ProjectsClient } from '../../ado/projectsClient.js';
 import { FieldsClient } from '../../ado/fieldsClient.js';
+import { LinkTypesClient } from '../../ado/linkTypesClient.js';
 import { WiqlClient } from '../../ado/wiqlClient.js';
 import { WorkItemsClient } from '../../ado/workItemsClient.js';
 import { QueriesClient } from '../../ado/queriesClient.js';
 import { FieldDiscoveryService } from '../../services/fieldDiscoveryService.js';
+import { LinkTypeDiscoveryService } from '../../services/linkTypeDiscoveryService.js';
 import { WorkItemService } from '../../services/workItemService.js';
 import { ReviewScopeResolver } from '../../services/reviewScopeResolver.js';
 import { RequirementReviewService } from '../../services/requirementReviewService.js';
@@ -16,6 +18,7 @@ import { CompletenessGapService } from '../../services/completenessGapService.js
 import { ConsistencyCandidateService } from '../../services/consistencyCandidateService.js';
 import { registerHealthTools } from './healthTools.js';
 import { registerFieldTools } from './fieldTools.js';
+import { registerLinkTypeTools } from './linkTypeTools.js';
 import { registerScopeTools } from './scopeTools.js';
 import { registerWorkItemTools } from './workItemTools.js';
 import { registerReviewTools } from './reviewTools.js';
@@ -30,6 +33,7 @@ export interface ToolDeps {
   wiqlClient: WiqlClient;
   workItemService: WorkItemService;
   fieldDiscoveryService: FieldDiscoveryService;
+  linkTypeDiscoveryService: LinkTypeDiscoveryService;
   reviewScopeResolver: ReviewScopeResolver;
   requirementReviewService: RequirementReviewService;
   contextPacketService: ContextPacketService;
@@ -41,10 +45,12 @@ export function buildToolDeps(config: AppConfig, logger: Logger): ToolDeps {
   const adoClient = new AdoClient(config, logger);
   const projectsClient = new ProjectsClient(adoClient, config);
   const fieldsClient = new FieldsClient(adoClient, config);
+  const linkTypesClient = new LinkTypesClient(adoClient, config);
   const wiqlClient = new WiqlClient(adoClient, config, logger);
   const workItemsClient = new WorkItemsClient(adoClient, config);
   const queriesClient = new QueriesClient(adoClient, config);
   const fieldDiscoveryService = new FieldDiscoveryService(fieldsClient);
+  const linkTypeDiscoveryService = new LinkTypeDiscoveryService(linkTypesClient);
   const workItemService = new WorkItemService(workItemsClient, config);
   const reviewScopeResolver = new ReviewScopeResolver(wiqlClient, config, logger, workItemService, queriesClient);
   const requirementReviewService = new RequirementReviewService();
@@ -60,6 +66,7 @@ export function buildToolDeps(config: AppConfig, logger: Logger): ToolDeps {
     wiqlClient,
     workItemService,
     fieldDiscoveryService,
+    linkTypeDiscoveryService,
     reviewScopeResolver,
     requirementReviewService,
     contextPacketService,
@@ -71,6 +78,7 @@ export function buildToolDeps(config: AppConfig, logger: Logger): ToolDeps {
 export function registerAllTools(server: McpServer, deps: ToolDeps): void {
   registerHealthTools(server, deps);
   registerFieldTools(server, deps);
+  registerLinkTypeTools(server, deps);
   registerScopeTools(server, deps);
   registerWorkItemTools(server, deps);
   registerReviewTools(server, deps);
