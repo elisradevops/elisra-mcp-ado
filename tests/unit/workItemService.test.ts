@@ -50,7 +50,7 @@ describe('WorkItemService.fetchMany', () => {
     const svc = new WorkItemService(client, baseConfig);
     const result = await svc.fetchMany([1, 2], mockAuth);
     expect(result).toHaveLength(2);
-    expect(client.fetchBatch).toHaveBeenCalledWith([1, 2], mockAuth, undefined, undefined);
+    expect(client.fetchBatch).toHaveBeenCalledWith([1, 2], mockAuth, undefined, undefined, undefined);
   });
 
   it('chunks at batchSize', async () => {
@@ -78,7 +78,7 @@ describe('WorkItemService.fetchMany', () => {
     const svc = new WorkItemService(client, baseConfig);
     await svc.fetchMany([1], mockAuth, { fields: ['System.Id', 'System.Title'] });
     expect(client.fetchBatch).toHaveBeenCalledWith(
-      [1], mockAuth, ['System.Id', 'System.Title'], undefined
+      [1], mockAuth, ['System.Id', 'System.Title'], undefined, undefined
     );
   });
 
@@ -86,7 +86,7 @@ describe('WorkItemService.fetchMany', () => {
     const client = makeClient([makeItem(1)]);
     const svc = new WorkItemService(client, baseConfig);
     await svc.fetchMany([1], mockAuth, { expand: 'relations' });
-    expect(client.fetchBatch).toHaveBeenCalledWith([1], mockAuth, undefined, 'relations');
+    expect(client.fetchBatch).toHaveBeenCalledWith([1], mockAuth, undefined, 'relations', undefined);
   });
 });
 

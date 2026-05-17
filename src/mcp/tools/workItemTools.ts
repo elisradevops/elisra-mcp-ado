@@ -18,6 +18,7 @@ export function registerWorkItemTools(server: McpServer, deps: ToolDeps): void {
     'Use "overview" for type/state counts only.',
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
+      project: z.string().optional().describe('Project name. Provide when known — scopes the batch API call to the project, avoiding 404s on on-prem ADO Server.'),
       ids: z.array(z.number().int().positive()).min(1).max(200).describe('Work item IDs to fetch (max 200 per call).'),
       fields: z.array(z.string()).optional().describe(
         'Field reference names to fetch. Omit for compact defaults. ' +
@@ -31,7 +32,7 @@ export function registerWorkItemTools(server: McpServer, deps: ToolDeps): void {
         'Number of items to return in samples mode.'
       ),
     },
-    async ({ pat, ids, fields, expand, responseMode, sampleSize }) => {
+    async ({ pat, project, ids, fields, expand, responseMode, sampleSize }) => {
       const auth = resolveAuthContext(config, pat);
 
       try {
@@ -58,7 +59,7 @@ export function registerWorkItemTools(server: McpServer, deps: ToolDeps): void {
           }
         }
 
-        const items = await workItemService.fetchMany(ids, auth, fetchOptions);
+        const items = await workItemService.fetchMany(ids, auth, fetchOptions, project);
 
         if (responseMode === 'overview') {
           const typeCounts: Record<string, number> = {};

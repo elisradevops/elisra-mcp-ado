@@ -275,7 +275,7 @@ export class ReviewScopeResolver {
     for (let d = 0; d < maxDepth && frontier.length > 0; d++) {
       this.logger.debug({ depth: d, frontierSize: frontier.length, rootId }, 'BFS level');
 
-      const items = await this.workItemService.fetchWithRelations(frontier, auth);
+      const items = await this.workItemService.fetchWithRelations(frontier, auth, project);
 
       // Collect neighbors without adding to visited yet — so we can apply breadth cap before committing
       const nextFrontier: number[] = [];

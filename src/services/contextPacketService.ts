@@ -153,9 +153,12 @@ export class ContextPacketService {
     const rootItems = await this.workItemService.fetchMany([rootId], auth, {
       fields: [...CONTEXT_FIELDS],
       expand: 'relations',
-    });
+    }, options.project);
     const root = rootItems[0];
     if (!root) throw new Error(`Work item ${rootId} not found.`);
+
+    // Derive project once; fall back to what ADO tells us in System.TeamProject
+    const project = options.project ?? (String(root.fields['System.TeamProject'] ?? '') || undefined);
 
     const classified = classifyRelations(root.relations ?? [], rootId);
 
@@ -164,7 +167,8 @@ export class ContextPacketService {
       classified.parentIds,
       opts.parentDepth,
       auth,
-      opts.descriptionMaxChars
+      opts.descriptionMaxChars,
+      project
     );
 
     // 3. Children — BFS up to childrenDepth
@@ -175,7 +179,8 @@ export class ContextPacketService {
       rootId,
       auth,
       opts.descriptionMaxChars,
-      truncated
+      truncated,
+      project
     );
 
     // 4. Direct relation groups — single batch fetch
@@ -188,7 +193,7 @@ export class ContextPacketService {
     const directItems = directIds.length > 0
       ? await this.workItemService.fetchMany(directIds, auth, {
           fields: [...CONTEXT_FIELDS],
-        })
+        }, project)
       : [];
 
     const directById = new Map(directItems.map((i) => [i.id, i]));
@@ -206,14 +211,14 @@ export class ContextPacketService {
         opts.siblingMax,
         auth,
         opts.descriptionMaxChars,
-        truncated
+        truncated,
+        project
       );
     }
 
     // 6. SameField — WIQL query
     let sameFieldItems: AdoWorkItem[] = [];
     if (options.contextField) {
-      const project = options.project ?? String(root.fields['System.TeamProject'] ?? '');
       if (project) {
         sameFieldItems = await this.fetchSameField(
           rootId,
@@ -227,7 +232,6 @@ export class ContextPacketService {
       }
     }
 
-    const project = options.project ?? String(root.fields['System.TeamProject'] ?? '');
     this.logger.debug({
       rootId,
       parents: parentItems.length,
@@ -256,7 +260,8 @@ export class ContextPacketService {
     initialParentIds: number[],
     maxDepth: number,
     auth: AuthContext,
-    _descMaxChars: number
+    _descMaxChars: number,
+    project?: string
   ): Promise<AdoWorkItem[]> {
     const allParents: AdoWorkItem[] = [];
     const visited = new Set<number>();
@@ -268,7 +273,7 @@ export class ContextPacketService {
       const items = await this.workItemService.fetchMany(frontier, auth, {
         fields: [...CONTEXT_FIELDS],
         expand: 'relations',
-      });
+      }, project);
       allParents.push(...items);
 
       const nextFrontier: number[] = [];
@@ -297,7 +302,8 @@ export class ContextPacketService {
     rootId: number,
     auth: AuthContext,
     descMaxChars: number,
-    truncated: TruncationNote[]
+    truncated: TruncationNote[],
+    project?: string
   ): Promise<AdoWorkItem[]> {
     const allChildren: AdoWorkItem[] = [];
     const visited = new Set<number>([rootId]);
@@ -313,7 +319,7 @@ export class ContextPacketService {
       const items = await this.workItemService.fetchMany(frontier, auth, {
         fields: [...CONTEXT_FIELDS],
         expand: d < maxDepth - 1 ? 'relations' : undefined,
-      });
+      }, project);
       allChildren.push(...items);
 
       if (d >= maxDepth - 1) break;
@@ -350,12 +356,13 @@ export class ContextPacketService {
     maxSiblings: number,
     auth: AuthContext,
     descMaxChars: number,
-    truncated: TruncationNote[]
+    truncated: TruncationNote[],
+    project?: string
   ): Promise<AdoWorkItem[]> {
     const parentItems = await this.workItemService.fetchMany([parentId], auth, {
       fields: ['System.Id'],
       expand: 'relations',
-    });
+    }, project);
     const parent = parentItems[0];
     if (!parent) return [];
 
@@ -372,7 +379,7 @@ export class ContextPacketService {
     const capped = siblingIds.slice(0, maxSiblings);
     if (capped.length === 0) return [];
 
-    return this.workItemService.fetchMany(capped, auth, { fields: [...CONTEXT_FIELDS] });
+    return this.workItemService.fetchMany(capped, auth, { fields: [...CONTEXT_FIELDS] }, project);
   }
 
   // ─── SameField ─────────────────────────────────────────────────────────────
@@ -408,7 +415,7 @@ export class ContextPacketService {
       const capped = otherIds.slice(0, maxItems).sort((a, b) => a - b);
       if (capped.length === 0) return [];
 
-      return this.workItemService.fetchMany(capped, auth, { fields: [...CONTEXT_FIELDS] });
+      return this.workItemService.fetchMany(capped, auth, { fields: [...CONTEXT_FIELDS] }, project);
     } catch (err) {
       this.logger.warn({ err, rootId, fieldRef }, 'fetchSameField failed — returning empty');
       return [];
