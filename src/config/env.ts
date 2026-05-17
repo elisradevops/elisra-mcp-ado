@@ -30,6 +30,16 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   ADO_FULL_RESPONSE_MAX_ITEMS: z.coerce.number().int().min(1).default(50),
   ADO_MAX_REVIEW_ITEMS: z.coerce.number().int().min(1).max(2000).default(500),
+  ADO_REVIEW_EXTRA_FIELDS: z
+    .string()
+    .optional()
+    .default('')
+    .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
+  ADO_TRACEABILITY_LINK_TOKENS: z
+    .string()
+    .optional()
+    .default('Affects,CoveredBy,TestedBy')
+    .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
     .default('info'),
@@ -52,6 +62,8 @@ function mapToConfig(env: ParsedEnv): AppConfig {
     adoAllowUnknownFields: env.ADO_ALLOW_UNKNOWN_FIELDS,
     adoFullResponseMaxItems: env.ADO_FULL_RESPONSE_MAX_ITEMS,
     adoMaxReviewItems: env.ADO_MAX_REVIEW_ITEMS,
+    adoReviewExtraFields: env.ADO_REVIEW_EXTRA_FIELDS,
+    adoTraceabilityLinkTokens: env.ADO_TRACEABILITY_LINK_TOKENS,
     logLevel: env.LOG_LEVEL,
     logFile: env.LOG_FILE,
     mcpoApiKey: env.MCPO_API_KEY,

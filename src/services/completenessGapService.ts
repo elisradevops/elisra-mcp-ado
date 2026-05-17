@@ -1,7 +1,5 @@
 import type { AdoWorkItem } from '../types/ado.js';
 import { htmlToText } from '../utils/htmlToText.js';
-import { ADO_LINK_TYPES } from '../domain/adoLinkTypes.js';
-
 export type GapLevel = 'L1' | 'L2' | 'L3';
 export type ContextMode = 'L1' | 'L2' | 'L3';
 
@@ -27,14 +25,6 @@ export interface CompletenessReport {
   gapCountByKind: Record<string, number>;
   findings: WorkItemGaps[];
 }
-
-const TRACEABILITY_RELS = new Set([
-  ADO_LINK_TYPES.ELISRA_COVERED_BY_FORWARD,
-  ADO_LINK_TYPES.ELISRA_COVERED_BY_REVERSE,
-  ADO_LINK_TYPES.AFFECTS_FORWARD,
-  ADO_LINK_TYPES.AFFECTS_REVERSE,
-  ADO_LINK_TYPES.TESTED_BY_FORWARD,
-]);
 
 function fieldText(item: AdoWorkItem, field: string): string {
   const raw = item.fields[field];
@@ -71,18 +61,18 @@ function analyzeL1(item: AdoWorkItem): GapFinding[] {
   return gaps;
 }
 
-function analyzeL2(item: AdoWorkItem): GapFinding[] {
+function analyzeL2(item: AdoWorkItem, tokens: readonly string[]): GapFinding[] {
   if (!item.relations) return []; // relations not fetched — skip rather than false-positive
 
   const gaps: GapFinding[] = [];
-  const hasTraceability = item.relations.some((r) => TRACEABILITY_RELS.has(r.rel as never));
+  const hasTraceability = item.relations.some((r) => tokens.some((t) => r.rel.includes(t)));
 
   if (!hasTraceability) {
     gaps.push({
       level: 'L2',
       kind: 'no_traceability_links',
       confidence: 'high',
-      message: 'No traceability links (Covers, CoveredBy, TestedBy, Affects).',
+      message: `No traceability links (tokens: ${tokens.join(', ')}).`,
     });
   }
 
@@ -135,7 +125,8 @@ export class CompletenessGapService {
   analyze(
     items: AdoWorkItem[],
     contextMode: ContextMode,
-    peerGroups?: Map<number, AdoWorkItem[]>
+    peerGroups: Map<number, AdoWorkItem[]> | undefined,
+    opts: { traceabilityTokens: readonly string[] }
   ): CompletenessReport {
     const findings: WorkItemGaps[] = [];
     const gapCountByLevel: Record<GapLevel, number> = { L1: 0, L2: 0, L3: 0 };
@@ -147,7 +138,7 @@ export class CompletenessGapService {
       gaps.push(...analyzeL1(item));
 
       if (contextMode === 'L2' || contextMode === 'L3') {
-        gaps.push(...analyzeL2(item));
+        gaps.push(...analyzeL2(item, opts.traceabilityTokens));
       }
 
       if (contextMode === 'L3' && peerGroups) {

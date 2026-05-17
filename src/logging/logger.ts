@@ -50,6 +50,11 @@ const pinoCompatSplat = winston.format((info) => {
     info.message = splat[0];
     Object.assign(info, meta);
     (info as Record<symbol, unknown[]>)[SPLAT] = splat.slice(1);
+  } else if (splat.length === 0 && typeof info.message === 'object' && info.message !== null) {
+    // logger.level({ meta }) called without a message string — promote meta to top level
+    const meta = info.message as Record<string, unknown>;
+    info.message = '';
+    Object.assign(info, meta);
   }
   return info;
 });

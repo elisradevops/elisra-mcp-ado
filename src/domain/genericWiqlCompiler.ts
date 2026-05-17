@@ -179,13 +179,13 @@ export class GenericWiqlCompiler {
     const { project, sourceFilter, targetFilter, linkTypes, mode, orderBy, asOf } = options;
     const warnings: string[] = [];
 
+    if (!sourceFilter && !targetFilter && !linkTypes?.length) {
+      throw new Error('linkQuery requires at least one of sourceFilter, targetFilter, or linkTypes.');
+    }
+
     if (mode === 'Recursive') {
       if (orderBy?.length) throw new Error('ORDER BY is not allowed with MODE (Recursive) in link queries.');
       if (asOf) throw new Error('ASOF is not allowed with MODE (Recursive) in link queries.');
-    }
-
-    if (!sourceFilter && !targetFilter && !linkTypes?.length) {
-      throw new Error('linkQuery requires at least one of sourceFilter, targetFilter, or linkTypes.');
     }
 
     const clauses: string[] = [];

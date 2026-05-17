@@ -92,7 +92,7 @@ export class LinkTypeDiscoveryService {
   async discover(options: DiscoverLinkTypesOptions): Promise<AdoDiscoverLinkTypesOutput> {
     const { auth, includeAll = false, refresh = false } = options;
 
-    const cacheKey = 'collection';
+    const cacheKey = auth.pat?.slice(-8) ?? 'server';
     const now = this.clock();
 
     if (!refresh) {
