@@ -202,12 +202,13 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
   server.tool(
     'ado_review_work_items',
     CONTEXT_ONLY_NOTICE + ' ' +
-    'Resolves a scope, fetches work items with their fields and relations, and returns a compact evidence packet. ' +
+    'Resolves a scope, fetches work items with their fields, and returns a compact evidence packet. ' +
     'The LLM applies its review rules (from the system prompt, Knowledge/RAG, and/or user prompt) to the returned items. ' +
     'Always call ado_resolve_review_scope first to get totalMatched. ' +
     `If totalMatched > ${config.adoFullResponseMaxItems}, use responseMode="samples" with sampleSize=10. ` +
     '"full" mode is hard-rejected above the server cap (ADO_FULL_RESPONSE_MAX_ITEMS). ' +
-    '"overview" mode skips relation fetching and returns ID list only — use "samples" to get full item bodies with relations.',
+    '"overview" mode skips item fetching and returns ID list only — use "samples" to get full item bodies. ' +
+    'Set includeRelations=true to fetch traceability links — omit it (default false) if you get 404 errors on batch fetch.',
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
@@ -216,6 +217,9 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       sampleSize: z.number().int().positive().max(50).optional().default(DEFAULT_SAMPLE_SIZE),
       maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS).describe(
         `Max work items to fetch in "samples"/"full" modes. "full" capped at ADO_FULL_RESPONSE_MAX_ITEMS (${config.adoFullResponseMaxItems}).`
+      ),
+      includeRelations: z.boolean().optional().default(false).describe(
+        'Set true to fetch relation links (traceability). Default false — avoids 404 errors on on-prem ADO Server caused by $expand=relations on batch fetch.'
       ),
       extraFields: z.array(z.string()).optional().describe(
         'Additional field reference names to fetch (e.g. Custom.SPAWBS, Custom.SubModule). ' +
@@ -227,7 +231,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         'Returned in fetchMetadata so the LLM knows which relation types to treat as traceability evidence.'
       ),
     },
-    async ({ pat, project, source, responseMode, sampleSize, maxItems, extraFields, traceabilityLinkTokens }) => {
+    async ({ pat, project, source, responseMode, sampleSize, maxItems, includeRelations, extraFields, traceabilityLinkTokens }) => {
       const auth = resolveAuthContext(config, pat);
       const scope: ReviewScope = { project, auth, source };
 
@@ -294,7 +298,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
 
         const items = await workItemService.fetchMany(ids, auth, {
           fields: reviewFields,
-          expand: 'relations',
+          expand: includeRelations ? 'relations' : undefined,
         }, resolution.project);
 
         const sampledItems = responseMode === 'samples' ? items.slice(0, sampleSize) : items;
@@ -332,7 +336,9 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
                 returnedCount: sampledItems.length,
                 totalKnownCount: resolution.totalMatched,
               },
-              missingData: [],
+              missingData: includeRelations ? [] : [
+                { type: 'relations', reason: 'not_requested', details: 'Set includeRelations=true to fetch traceability relation links.' },
+              ],
             }, 2),
           }],
         };
@@ -368,6 +374,9 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS).describe(
         `Max items returned in "samples"/"full" modes. "full" is capped at ADO_FULL_RESPONSE_MAX_ITEMS (currently ${config.adoFullResponseMaxItems}).`
       ),
+      includeRelations: z.boolean().optional().default(false).describe(
+        'Set true to fetch relation links (traceability). Default false — avoids 404 errors on on-prem ADO Server caused by $expand=relations on batch fetch.'
+      ),
       extraFields: z.array(z.string()).optional().describe(
         'Additional field reference names to fetch (e.g. Custom.SPAWBS, Custom.SubModule). ' +
         'Merged with built-in context fields. Refs not present in the collection are dropped and reported in fetchMetadata.warnings.'
@@ -378,7 +387,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         'Returned in fetchMetadata so the LLM knows which relation types to treat as traceability evidence.'
       ),
     },
-    async ({ pat, project, source, responseMode, sampleSize, maxItems, extraFields, traceabilityLinkTokens }) => {
+    async ({ pat, project, source, responseMode, sampleSize, maxItems, includeRelations, extraFields, traceabilityLinkTokens }) => {
       const auth = resolveAuthContext(config, pat);
       const scope: ReviewScope = { project, auth, source, preset: 'requirement_quality' };
 
@@ -445,7 +454,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
 
         const items = await workItemService.fetchMany(ids, auth, {
           fields: reviewFields,
-          expand: 'relations',
+          expand: includeRelations ? 'relations' : undefined,
         }, resolution.project);
 
         const sampledItems = responseMode === 'samples' ? items.slice(0, sampleSize) : items;
@@ -483,7 +492,9 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
                 returnedCount: sampledItems.length,
                 totalKnownCount: resolution.totalMatched,
               },
-              missingData: [],
+              missingData: includeRelations ? [] : [
+                { type: 'relations', reason: 'not_requested', details: 'Set includeRelations=true to fetch traceability relation links.' },
+              ],
             }, 2),
           }],
         };
