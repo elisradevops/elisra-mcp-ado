@@ -32,7 +32,8 @@ export function checkFullModeGuard(count: number, cap: number): FullModeGuardRes
     allowed: false,
     reason:
       `Full mode rejected: ${count} items exceeds ADO_FULL_RESPONSE_MAX_ITEMS (${cap}). ` +
-      `Use responseMode="samples" or narrow the scope.`,
+      `Use responseMode="samples" (with sampleSize≤50) or responseMode="overview", or narrow the scope. ` +
+      `Operators can raise the cap via the ADO_FULL_RESPONSE_MAX_ITEMS environment variable.`,
   };
 }
 

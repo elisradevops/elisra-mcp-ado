@@ -64,7 +64,7 @@ export class WorkItemsClient implements IWorkItemsClient {
       params['$expand'] = expand;
     }
 
-    const body: Record<string, unknown> = { ids };
+    const body: Record<string, unknown> = { ids, errorPolicy: 'omit' };
     if (fields && fields.length > 0) {
       body['fields'] = fields;
     }

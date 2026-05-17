@@ -96,7 +96,9 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
   server.tool(
     'ado_resolve_review_scope',
     'Resolve a review scope (WIQL, IDs, field filters, or linked traversal) to a list of matching work item IDs. ' +
-    'Use this before calling review or context tools to confirm the scope is what you expect. ' +
+    'Always call this BEFORE calling any review tool to confirm scope and check totalMatched. ' +
+    `If totalMatched > fullResponseCap (returned in the response, default ${config.adoFullResponseMaxItems}), do NOT call review tools with responseMode="full" — ` +
+    'use responseMode="overview" first, then responseMode="samples" with sampleSize=10 for findings. ' +
     'Default response mode is "overview" (counts only). Use responseMode="ids" for the full ID list.',
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
@@ -116,6 +118,7 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
           project: resolution.project,
           sourceType: resolution.sourceType,
           totalMatched: resolution.totalMatched,
+          fullResponseCap: config.adoFullResponseMaxItems,
           warnings: resolution.warnings,
           ...(resolution.debugWiql !== undefined ? { debugWiql: resolution.debugWiql } : {}),
         };
