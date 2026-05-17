@@ -28,7 +28,7 @@ const envSchema = z.object({
     .optional()
     .default('false')
     .transform((v) => v === 'true'),
-  ADO_FULL_RESPONSE_MAX_ITEMS: z.coerce.number().int().min(1).default(50),
+  ADO_FULL_RESPONSE_MAX_ITEMS: z.coerce.number().int().min(1).default(200),
   ADO_MAX_REVIEW_ITEMS: z.coerce.number().int().min(1).max(2000).default(500),
   ADO_REVIEW_EXTRA_FIELDS: z
     .string()

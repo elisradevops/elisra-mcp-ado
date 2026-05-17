@@ -51,15 +51,41 @@ function buildTlsErrorMessage(err: unknown): string {
   );
 }
 
-function mapHttpError(err: AxiosError, debug: boolean): Error {
+function mapHttpError(err: AxiosError, debug: boolean, logger?: Logger, requestData?: unknown): Error {
   const status = err.response?.status;
   if (status === 401 || status === 403 || status === 404) {
+    const idsArray =
+      requestData && typeof requestData === 'object' &&
+      Array.isArray((requestData as Record<string, unknown>)['ids'])
+        ? (requestData as Record<string, unknown>)['ids'] as number[]
+        : undefined;
+    const isBatchCall = !!idsArray;
+    const responseSnippet = err.response?.data
+      ? String(JSON.stringify(err.response.data)).slice(0, 400)
+      : undefined;
+
+    logger?.warn({
+      status,
+      url: err.config?.url,
+      method: err.config?.method?.toUpperCase(),
+      apiVersion: err.config?.params?.['api-version'],
+      ...(idsArray ? { batchIdCount: idsArray.length, batchIdsPreview: idsArray.slice(0, 10) } : {}),
+      ...(responseSnippet ? { responseSnippet } : {}),
+    }, isBatchCall
+      ? 'ADO batch fetch failed — one or more IDs may be deleted, in recycle bin, or cross-project'
+      : 'ADO HTTP error — check PAT permissions and project name'
+    );
+
     if (debug) {
-      return new Error(`ADO returned HTTP ${status}: check PAT permissions and project name.`);
+      const hint = isBatchCall
+        ? `ADO returned HTTP ${status} on batch fetch: one or more IDs may be deleted or cross-project.`
+        : `ADO returned HTTP ${status}: check PAT permissions and project name.`;
+      return new Error(hint);
     }
     return new Error(
-      'ADO request failed (access denied, invalid credentials, or resource not found). ' +
-      'Enable ADO_ENABLE_DEBUG_OUTPUT=true for details.'
+      isBatchCall
+        ? 'ADO batch fetch failed (one or more IDs deleted or cross-project). Enable ADO_ENABLE_DEBUG_OUTPUT=true for details.'
+        : 'ADO request failed (access denied, invalid credentials, or resource not found). Enable ADO_ENABLE_DEBUG_OUTPUT=true for details.'
     );
   }
   const safe = redactError(err);
@@ -190,7 +216,7 @@ export class AdoClient {
               response as AxiosResponse
             );
             Object.assign(fakeErr, { response });
-            throw mapHttpError(fakeErr, this.config.adoEnableDebugOutput);
+            throw mapHttpError(fakeErr, this.config.adoEnableDebugOutput, this.logger, options.data);
           }
           lastError = new Error(`ADO request returned HTTP ${status}`);
           if (attempt < RETRY_MAX) {

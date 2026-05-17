@@ -114,7 +114,11 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
     '(clear, complete, consistent, singular, verifiable, feasible, traceable). ' +
     'Single-item heuristics are applied for all attributes. ' +
     'Consistent and full completeness require context analysis (Phase 8). ' +
-    'Default response mode is "overview" (risk distribution summary). Use "samples" for the first N findings or "full" for all.',
+    'Default response mode is "overview" (risk distribution summary). Use "samples" for the first N findings or "full" for all. ' +
+    'IMPORTANT: Always call ado_resolve_review_scope first to get totalMatched. ' +
+    `If totalMatched > ${config.adoFullResponseMaxItems}, do NOT use responseMode="full" — use "overview" then "samples" with sampleSize=10. ` +
+    '"full" mode is hard-rejected above the server cap (ADO_FULL_RESPONSE_MAX_ITEMS). ' +
+    '"overview" mode skips relation fetching for performance; traceability risk may be underestimated — use "samples" to get per-item traceability findings.',
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
@@ -160,9 +164,12 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         const extras = [...config.adoReviewExtraFields, ...(extraFields ?? [])];
         const { fields: reviewFields, dropped, discoveryError } =
           await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
+        // overview skips relations to avoid 404 from deleted/cross-project IDs and reduce payload size.
+        // Traceability findings are suppressed in overview; use "samples" to see them per-item.
+        const expandMode = responseMode === 'overview' ? 'none' : 'relations';
         const items = await workItemService.fetchMany(ids, auth, {
           fields: reviewFields,
-          expand: 'relations',
+          expand: expandMode,
         });
 
         const traceTokens = traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens;
@@ -172,6 +179,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           ...resolution.warnings,
           ...(dropped.length ? [{ kind: 'missing_fields', fields: dropped }] : []),
           ...(discoveryError ? [{ kind: 'field_discovery_unavailable', message: discoveryError }] : []),
+          ...(responseMode === 'overview' ? [{ kind: 'traceability_skipped', message: 'Traceability links not evaluated in overview mode. Use responseMode="samples" for per-item traceability findings.' }] : []),
         ];
 
         if (responseMode === 'overview') {
@@ -213,7 +221,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        logger.warn({ err }, 'ado_review_work_items failed');
+        logger.warn({ err, responseMode, sourceType: source.type }, 'ado_review_work_items failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
       }
     }
@@ -227,6 +235,10 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
     '(clear, complete, consistent, singular, verifiable, feasible, traceable). ' +
     'This is a focused wrapper for requirement-type work items. ' +
     'Tip: add a fieldFilters source with System.WorkItemType IN ["Requirement","Feature"] to scope to requirement types. ' +
+    'IMPORTANT: Always call ado_resolve_review_scope first to get totalMatched. ' +
+    `If totalMatched > ${config.adoFullResponseMaxItems}, do NOT use responseMode="full" — use "overview" then "samples" with sampleSize=10. ` +
+    '"full" mode is hard-rejected above the server cap (ADO_FULL_RESPONSE_MAX_ITEMS). ' +
+    '"overview" mode skips relation fetching for performance; traceability risk may be underestimated — use "samples" for per-item traceability findings. ' +
     'See ado_review_work_items for full parameter reference.',
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
@@ -234,7 +246,9 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       source: ValidatedSourceSchema,
       responseMode: z.enum(REVIEW_RESPONSE_MODES).optional().default('overview'),
       sampleSize: z.number().int().positive().max(50).optional().default(DEFAULT_SAMPLE_SIZE),
-      maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS),
+      maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS).describe(
+        `Max items returned in "samples"/"full" modes. "full" is capped at ADO_FULL_RESPONSE_MAX_ITEMS (currently ${config.adoFullResponseMaxItems}) and hard-rejected above it. "overview" always processes all matched items (up to ADO_MAX_REVIEW_ITEMS, default 500).`
+      ),
       extraFields: z.array(z.string()).optional().describe(
         'Additional field reference names to fetch (e.g. Custom.SPAWBS, Custom.SubModule). ' +
         'Merged with built-in REVIEW_FIELDS and ADO_REVIEW_EXTRA_FIELDS env. ' +
@@ -270,9 +284,11 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         const extras = [...config.adoReviewExtraFields, ...(extraFields ?? [])];
         const { fields: reviewFields, dropped, discoveryError } =
           await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
+        // overview skips relations to avoid 404 from deleted/cross-project IDs and reduce payload size.
+        const expandMode = responseMode === 'overview' ? 'none' : 'relations';
         const items = await workItemService.fetchMany(ids, auth, {
           fields: reviewFields,
-          expand: 'relations',
+          expand: expandMode,
         });
 
         const traceTokens = traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens;
@@ -282,6 +298,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           ...resolution.warnings,
           ...(dropped.length ? [{ kind: 'missing_fields', fields: dropped }] : []),
           ...(discoveryError ? [{ kind: 'field_discovery_unavailable', message: discoveryError }] : []),
+          ...(responseMode === 'overview' ? [{ kind: 'traceability_skipped', message: 'Traceability links not evaluated in overview mode. Use responseMode="samples" for per-item traceability findings.' }] : []),
         ];
 
         const sample = responseMode === 'samples' ? allFindings.slice(0, sampleSize) : allFindings;
@@ -305,7 +322,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        logger.warn({ err }, 'ado_review_requirements failed');
+        logger.warn({ err, responseMode, sourceType: source.type }, 'ado_review_requirements failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
       }
     }
