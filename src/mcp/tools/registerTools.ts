@@ -47,7 +47,7 @@ export function buildToolDeps(config: AppConfig, logger: Logger): ToolDeps {
   const fieldsClient = new FieldsClient(adoClient, config);
   const linkTypesClient = new LinkTypesClient(adoClient, config);
   const wiqlClient = new WiqlClient(adoClient, config, logger);
-  const workItemsClient = new WorkItemsClient(adoClient, config);
+  const workItemsClient = new WorkItemsClient(adoClient, config, logger);
   const queriesClient = new QueriesClient(adoClient, config);
   const fieldDiscoveryService = new FieldDiscoveryService(fieldsClient);
   const linkTypeDiscoveryService = new LinkTypeDiscoveryService(linkTypesClient);

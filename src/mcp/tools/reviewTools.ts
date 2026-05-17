@@ -170,7 +170,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         const items = await workItemService.fetchMany(ids, auth, {
           fields: reviewFields,
           expand: expandMode,
-        });
+        }, resolution.project);
 
         const traceTokens = traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens;
         const allFindings = requirementReviewService.review(items, { traceabilityTokens: traceTokens });
@@ -289,7 +289,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         const items = await workItemService.fetchMany(ids, auth, {
           fields: reviewFields,
           expand: expandMode,
-        });
+        }, resolution.project);
 
         const traceTokens = traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens;
         const allFindings = requirementReviewService.review(items, { traceabilityTokens: traceTokens });
@@ -381,7 +381,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         const items = await workItemService.fetchMany(ids, auth, {
           fields: reviewFields,
           expand: needsRelations ? 'relations' : undefined,
-        });
+        }, resolution.project);
 
         let peerGroups: Map<number, AdoWorkItem[]> | undefined;
 
@@ -494,7 +494,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         const items = await workItemService.fetchMany(ids, auth, {
           fields: reviewFields,
           expand: comparisonMode === 'parent' ? 'relations' : undefined,
-        });
+        }, resolution.project);
 
         const result = consistencyCandidateService.findCandidates(
           items,

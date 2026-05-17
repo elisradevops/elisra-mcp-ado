@@ -1,20 +1,22 @@
 import type { AdoClient } from './adoClient.js';
 import type { AuthContext } from '../auth/authContext.js';
 import type { AppConfig } from '../config/config.js';
+import type { Logger } from '../logging/logger.js';
 import type { AdoWorkItem, AdoWorkItemsBatchResponse } from '../types/ado.js';
 import { parseApiMajor } from './apiVersionLadder.js';
 
 export type WorkItemExpand = 'none' | 'relations' | 'all';
 
 export interface IWorkItemsClient {
-  fetchBatch(ids: number[], auth: AuthContext, fields?: string[], expand?: WorkItemExpand): Promise<AdoWorkItem[]>;
-  fetchSingle(id: number, auth: AuthContext, expand?: WorkItemExpand): Promise<AdoWorkItem>;
+  fetchBatch(ids: number[], auth: AuthContext, fields?: string[], expand?: WorkItemExpand, project?: string): Promise<AdoWorkItem[]>;
+  fetchSingle(id: number, auth: AuthContext, expand?: WorkItemExpand, project?: string): Promise<AdoWorkItem>;
 }
 
 export class WorkItemsClient implements IWorkItemsClient {
   constructor(
     private readonly client: AdoClient,
-    private readonly config: AppConfig
+    private readonly config: AppConfig,
+    private readonly logger?: Logger
   ) {}
 
   private isPreBatchTfs(): boolean {
@@ -28,7 +30,8 @@ export class WorkItemsClient implements IWorkItemsClient {
     ids: number[],
     auth: AuthContext,
     fields?: string[],
-    expand?: WorkItemExpand
+    expand?: WorkItemExpand,
+    project?: string
   ): Promise<AdoWorkItem[]> {
     if (ids.length === 0) return [];
     if (ids.length > 200) {
@@ -36,8 +39,11 @@ export class WorkItemsClient implements IWorkItemsClient {
     }
 
     if (this.isPreBatchTfs()) {
-      // TFS 2018 path: GET /_apis/wit/workitems?ids=1,2,3[&fields=...][&$expand=...]
-      const url = `${this.config.adoOrgUrl}/_apis/wit/workitems`;
+      // TFS 2018 path: GET /{project}/_apis/wit/workitems?ids=1,2,3[&fields=...][&$expand=...]
+      if (!project) this.logger?.warn({ idCount: ids.length }, 'fetchBatch: no project — using org-scoped URL, may 404 on on-prem ADO Server');
+      const url = project
+        ? `${this.config.adoOrgUrl}/${encodeURIComponent(project)}/_apis/wit/workitems`
+        : `${this.config.adoOrgUrl}/_apis/wit/workitems`;
       const params: Record<string, string> = {
         ids: ids.join(','),
         'api-version': this.config.adoApiVersion,
@@ -55,8 +61,11 @@ export class WorkItemsClient implements IWorkItemsClient {
       return response.value ?? [];
     }
 
-    // 5.0+ path: POST /_apis/wit/workitemsbatch
-    const url = `${this.config.adoOrgUrl}/_apis/wit/workitemsbatch`;
+    // 5.0+ path: POST /{project}/_apis/wit/workitemsbatch
+    if (!project) this.logger?.warn({ idCount: ids.length }, 'fetchBatch: no project — using org-scoped URL, may 404 on on-prem ADO Server');
+    const url = project
+      ? `${this.config.adoOrgUrl}/${encodeURIComponent(project)}/_apis/wit/workitemsbatch`
+      : `${this.config.adoOrgUrl}/_apis/wit/workitemsbatch`;
     const params: Record<string, string> = {
       'api-version': this.config.adoApiVersion,
     };
@@ -80,8 +89,11 @@ export class WorkItemsClient implements IWorkItemsClient {
     return response.value ?? [];
   }
 
-  async fetchSingle(id: number, auth: AuthContext, expand?: WorkItemExpand): Promise<AdoWorkItem> {
-    const url = `${this.config.adoOrgUrl}/_apis/wit/workitems/${id}`;
+  async fetchSingle(id: number, auth: AuthContext, expand?: WorkItemExpand, project?: string): Promise<AdoWorkItem> {
+    if (!project) this.logger?.warn({ id }, 'fetchSingle: no project — using org-scoped URL, may 404 on on-prem ADO Server');
+    const url = project
+      ? `${this.config.adoOrgUrl}/${encodeURIComponent(project)}/_apis/wit/workitems/${id}`
+      : `${this.config.adoOrgUrl}/_apis/wit/workitems/${id}`;
     const params: Record<string, string | number> = {
       'api-version': this.config.adoApiVersion,
     };

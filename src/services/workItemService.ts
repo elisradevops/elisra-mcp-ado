@@ -34,7 +34,7 @@ export class WorkItemService {
     private readonly config: AppConfig
   ) {}
 
-  async fetchMany(ids: number[], auth: AuthContext, options: FetchOptions = {}): Promise<AdoWorkItem[]> {
+  async fetchMany(ids: number[], auth: AuthContext, options: FetchOptions = {}, project?: string): Promise<AdoWorkItem[]> {
     if (ids.length === 0) return [];
 
     const batchSize = Math.min(this.config.adoBatchSize, 200);
@@ -42,16 +42,16 @@ export class WorkItemService {
       ids,
       batchSize,
       BATCH_CONCURRENCY,
-      (batch) => this.workItemsClient.fetchBatch(batch, auth, options.fields, options.expand)
+      (batch) => this.workItemsClient.fetchBatch(batch, auth, options.fields, options.expand, project)
     );
   }
 
-  async fetchCompact(ids: number[], auth: AuthContext): Promise<AdoWorkItem[]> {
-    return this.fetchMany(ids, auth, { fields: [...COMPACT_FIELDS] });
+  async fetchCompact(ids: number[], auth: AuthContext, project?: string): Promise<AdoWorkItem[]> {
+    return this.fetchMany(ids, auth, { fields: [...COMPACT_FIELDS] }, project);
   }
 
-  async fetchWithRelations(ids: number[], auth: AuthContext): Promise<AdoWorkItem[]> {
-    return this.fetchMany(ids, auth, { expand: 'relations' });
+  async fetchWithRelations(ids: number[], auth: AuthContext, project?: string): Promise<AdoWorkItem[]> {
+    return this.fetchMany(ids, auth, { expand: 'relations' }, project);
   }
 }
 

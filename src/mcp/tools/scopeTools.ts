@@ -210,7 +210,7 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
 
         const ids = resolution.ids.slice(0, maxItems);
         const fetchFields = [...new Set([...COMPACT_FIELDS, ...groupBy])];
-        const items = await workItemService.fetchMany(ids, auth, { fields: fetchFields });
+        const items = await workItemService.fetchMany(ids, auth, { fields: fetchFields }, resolution.project);
 
         const groups = groupByFields(items, groupBy);
 
