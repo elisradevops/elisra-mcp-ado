@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolDeps } from './registerTools.js';
 import { resolveAuthContext } from '../../auth/authContext.js';
+import type { FieldDiscoveryService } from '../../services/fieldDiscoveryService.js';
+import type { AuthContext } from '../../auth/authContext.js';
 import { safeJsonStringify } from '../../utils/safeJson.js';
 import type { ReviewScope } from '../../domain/reviewScope.js';
 import { summarizeFindings } from '../../domain/requirementQuality.js';
@@ -51,6 +53,48 @@ const SourceSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('savedQuery'), queryPathOrId: z.string() }),
 ]);
 
+const ValidatedSourceSchema = SourceSchema.superRefine((v, ctx) => {
+  if (v.type === 'fieldFilters' && !v.filters?.length && !v.filterTree) {
+    ctx.addIssue({ code: 'custom', message: 'fieldFilters source requires either filters or filterTree.' });
+  }
+});
+
+interface ResolvedReviewFields {
+  fields: string[];
+  dropped: string[];
+  discoveryError?: string;
+}
+
+async function resolveAvailableReviewFields(
+  fieldDiscoveryService: FieldDiscoveryService,
+  auth: AuthContext,
+  project: string | undefined,
+  extras: readonly string[],
+  logger: ToolDeps['logger'],
+): Promise<ResolvedReviewFields> {
+  const requested = [...REVIEW_FIELDS, ...extras];
+  const deduped = [...new Set(requested.map((s) => s.trim()).filter(Boolean))];
+  try {
+    const catalog = await fieldDiscoveryService.discover({ auth, project });
+    const dropped: string[] = [];
+    const kept: string[] = [];
+    for (const ref of deduped) {
+      // System.* fields are universal — short-circuit to keep warnings focused on real gaps
+      if (ref.startsWith('System.') || catalog.has(ref)) {
+        kept.push(ref);
+      } else {
+        dropped.push(ref);
+      }
+    }
+    return { fields: kept, dropped };
+  } catch (err) {
+    // Discovery failure must not block the review — fall back to the full requested set.
+    const message = err instanceof Error ? err.message : String(err);
+    logger.warn({ err }, 'Field discovery unavailable; falling back to full requested set');
+    return { fields: deduped, dropped: [], discoveryError: message };
+  }
+}
+
 const REVIEW_RESPONSE_MODES = ['overview', 'samples', 'full'] as const;
 const DEFAULT_SAMPLE_SIZE = 10;
 const DEFAULT_MAX_ITEMS = 200;
@@ -58,7 +102,7 @@ const DEFAULT_MAX_GROUP_SIZE = 25;
 
 export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
   const {
-    config, logger, reviewScopeResolver, workItemService,
+    config, logger, reviewScopeResolver, workItemService, fieldDiscoveryService,
     requirementReviewService, completenessGapService, consistencyCandidateService,
   } = deps;
 
@@ -74,14 +118,24 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
-      source: SourceSchema,
+      source: ValidatedSourceSchema,
       responseMode: z.enum(REVIEW_RESPONSE_MODES).optional().default('overview'),
       sampleSize: z.number().int().positive().max(50).optional().default(DEFAULT_SAMPLE_SIZE),
       maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS).describe(
         `Max work items to review in "samples"/"full" modes. "overview" always processes all matched items (capped at ADO_MAX_REVIEW_ITEMS, default 500). "full" also capped at ADO_FULL_RESPONSE_MAX_ITEMS (${config.adoFullResponseMaxItems}).`
       ),
+      extraFields: z.array(z.string()).optional().describe(
+        'Additional field reference names to fetch (e.g. Custom.SPAWBS, Custom.SubModule). ' +
+        'Merged with built-in REVIEW_FIELDS and ADO_REVIEW_EXTRA_FIELDS env. ' +
+        'Refs not present in the collection are dropped and reported in warnings.'
+      ),
+      traceabilityLinkTokens: z.array(z.string()).optional().describe(
+        'Substring tokens used to recognize traceability links on relation rel names. ' +
+        'Default: ADO_TRACEABILITY_LINK_TOKENS env (Affects, CoveredBy, TestedBy). ' +
+        'Example: ["Affects","CoveredBy","Implements"] to recognize Custom.Implements-* links.'
+      ),
     },
-    async ({ pat, project, source, responseMode, sampleSize, maxItems }) => {
+    async ({ pat, project, source, responseMode, sampleSize, maxItems, extraFields, traceabilityLinkTokens }) => {
       const auth = resolveAuthContext(config, pat);
       const scope: ReviewScope = { project, auth, source };
 
@@ -103,13 +157,22 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         }
 
         const ids = resolution.ids.slice(0, cap);
+        const extras = [...config.adoReviewExtraFields, ...(extraFields ?? [])];
+        const { fields: reviewFields, dropped, discoveryError } =
+          await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
         const items = await workItemService.fetchMany(ids, auth, {
-          fields: [...REVIEW_FIELDS],
+          fields: reviewFields,
           expand: 'relations',
         });
 
-        const allFindings = requirementReviewService.review(items);
+        const traceTokens = traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens;
+        const allFindings = requirementReviewService.review(items, { traceabilityTokens: traceTokens });
         const summary = summarizeFindings(allFindings);
+        const warnings = [
+          ...resolution.warnings,
+          ...(dropped.length ? [{ kind: 'missing_fields', fields: dropped }] : []),
+          ...(discoveryError ? [{ kind: 'field_discovery_unavailable', message: discoveryError }] : []),
+        ];
 
         if (responseMode === 'overview') {
           const highRiskIds = allFindings.filter((f) => f.overallRisk === 'high').map((f) => f.workItemId);
@@ -124,7 +187,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
                 reviewed: allFindings.length,
                 summary,
                 sampleHighRiskIds: takeSampleIds(highRiskIds),
-                warnings: resolution.warnings,
+                warnings,
               }, 2),
             }],
           };
@@ -144,7 +207,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
               returned: sample.length,
               summary,
               findings: sample,
-              warnings: resolution.warnings,
+              warnings,
             }, 2),
           }],
         };
@@ -168,12 +231,22 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
-      source: SourceSchema,
+      source: ValidatedSourceSchema,
       responseMode: z.enum(REVIEW_RESPONSE_MODES).optional().default('overview'),
       sampleSize: z.number().int().positive().max(50).optional().default(DEFAULT_SAMPLE_SIZE),
       maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS),
+      extraFields: z.array(z.string()).optional().describe(
+        'Additional field reference names to fetch (e.g. Custom.SPAWBS, Custom.SubModule). ' +
+        'Merged with built-in REVIEW_FIELDS and ADO_REVIEW_EXTRA_FIELDS env. ' +
+        'Refs not present in the collection are dropped and reported in warnings.'
+      ),
+      traceabilityLinkTokens: z.array(z.string()).optional().describe(
+        'Substring tokens used to recognize traceability links on relation rel names. ' +
+        'Default: ADO_TRACEABILITY_LINK_TOKENS env (Affects, CoveredBy, TestedBy). ' +
+        'Example: ["Affects","CoveredBy","Implements"] to recognize Custom.Implements-* links.'
+      ),
     },
-    async ({ pat, project, source, responseMode, sampleSize, maxItems }) => {
+    async ({ pat, project, source, responseMode, sampleSize, maxItems, extraFields, traceabilityLinkTokens }) => {
       const auth = resolveAuthContext(config, pat);
       const scope: ReviewScope = { project, auth, source, preset: 'requirement_quality' };
 
@@ -194,13 +267,22 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         }
 
         const ids = resolution.ids.slice(0, cap);
+        const extras = [...config.adoReviewExtraFields, ...(extraFields ?? [])];
+        const { fields: reviewFields, dropped, discoveryError } =
+          await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
         const items = await workItemService.fetchMany(ids, auth, {
-          fields: [...REVIEW_FIELDS],
+          fields: reviewFields,
           expand: 'relations',
         });
 
-        const allFindings = requirementReviewService.review(items);
+        const traceTokens = traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens;
+        const allFindings = requirementReviewService.review(items, { traceabilityTokens: traceTokens });
         const summary = summarizeFindings(allFindings);
+        const warnings = [
+          ...resolution.warnings,
+          ...(dropped.length ? [{ kind: 'missing_fields', fields: dropped }] : []),
+          ...(discoveryError ? [{ kind: 'field_discovery_unavailable', message: discoveryError }] : []),
+        ];
 
         const sample = responseMode === 'samples' ? allFindings.slice(0, sampleSize) : allFindings;
         const includeFindings = responseMode !== 'overview';
@@ -217,7 +299,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
               ...(includeFindings ? { returned: sample.length } : {}),
               summary,
               ...(includeFindings ? { findings: sample } : {}),
-              warnings: resolution.warnings,
+              warnings,
             }, 2),
           }],
         };
@@ -242,7 +324,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
-      source: SourceSchema,
+      source: ValidatedSourceSchema,
       contextMode: z.enum(['L1', 'L2', 'L3']).optional().default('L2').describe(
         'Analysis depth. L1=single-item, L2=+linked context, L3=+peer comparison.'
       ),
@@ -252,8 +334,18 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS).describe(
         'Max items to analyze. Default 200. Server cap: ADO_MAX_REVIEW_ITEMS (default 500).'
       ),
+      extraFields: z.array(z.string()).optional().describe(
+        'Additional field reference names to fetch (e.g. Custom.SPAWBS, Custom.SubModule). ' +
+        'Merged with built-in REVIEW_FIELDS and ADO_REVIEW_EXTRA_FIELDS env. ' +
+        'Refs not present in the collection are dropped and reported in warnings.'
+      ),
+      traceabilityLinkTokens: z.array(z.string()).optional().describe(
+        'Substring tokens used to recognize traceability links on relation rel names. ' +
+        'Default: ADO_TRACEABILITY_LINK_TOKENS env (Affects, CoveredBy, TestedBy). ' +
+        'Example: ["Affects","CoveredBy","Implements"] to recognize Custom.Implements-* links.'
+      ),
     },
-    async ({ pat, project, source, contextMode, groupField, maxItems }) => {
+    async ({ pat, project, source, contextMode, groupField, maxItems, extraFields, traceabilityLinkTokens }) => {
       const auth = resolveAuthContext(config, pat);
       const scope: ReviewScope = { project, auth, source };
 
@@ -262,8 +354,15 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         const ids = resolution.ids.slice(0, Math.min(maxItems, config.adoMaxReviewItems));
         const needsRelations = contextMode === 'L2' || contextMode === 'L3';
 
+        const extras = [
+          ...config.adoReviewExtraFields,
+          ...(extraFields ?? []),
+          ...(groupField ? [groupField] : []),
+        ];
+        const { fields: reviewFields, dropped, discoveryError } =
+          await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
         const items = await workItemService.fetchMany(ids, auth, {
-          fields: [...REVIEW_FIELDS],
+          fields: reviewFields,
           expand: needsRelations ? 'relations' : undefined,
         });
 
@@ -289,7 +388,16 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           }
         }
 
-        const report = completenessGapService.analyze(items, contextMode as ContextMode, peerGroups);
+        const traceTokens = traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens;
+        const report = completenessGapService.analyze(
+          items, contextMode as ContextMode, peerGroups, { traceabilityTokens: traceTokens }
+        );
+
+        const completenessWarnings = [
+          ...resolution.warnings,
+          ...(dropped.length ? [{ kind: 'missing_fields', fields: dropped }] : []),
+          ...(discoveryError ? [{ kind: 'field_discovery_unavailable', message: discoveryError }] : []),
+        ];
 
         logger.info({
           totalAnalyzed: report.totalAnalyzed,
@@ -306,7 +414,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
               analyzed: report.totalAnalyzed,
               contextMode,
               ...report,
-              warnings: resolution.warnings,
+              warnings: completenessWarnings,
             }, 2),
           }],
         };
@@ -330,7 +438,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
-      source: SourceSchema,
+      source: ValidatedSourceSchema,
       comparisonMode: z.enum(['parent', 'field', 'title-tokens']).describe(
         'How to group items before comparing. "parent" groups by parent work item, ' +
         '"field" groups by comparisonField value, "title-tokens" groups by shared title tokens.'
@@ -344,8 +452,13 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS).describe(
         'Max items to analyze. Default 200. Server cap: ADO_MAX_REVIEW_ITEMS (default 500).'
       ),
+      extraFields: z.array(z.string()).optional().describe(
+        'Additional field reference names to fetch (e.g. Custom.SPAWBS, Custom.SubModule). ' +
+        'Merged with built-in REVIEW_FIELDS and ADO_REVIEW_EXTRA_FIELDS env. ' +
+        'Refs not present in the collection are dropped and reported in warnings.'
+      ),
     },
-    async ({ pat, project, source, comparisonMode, comparisonField, maxGroupSize, maxItems }) => {
+    async ({ pat, project, source, comparisonMode, comparisonField, maxGroupSize, maxItems, extraFields }) => {
       const auth = resolveAuthContext(config, pat);
       const scope: ReviewScope = { project, auth, source };
 
@@ -354,8 +467,15 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         const ids = resolution.ids.slice(0, Math.min(maxItems, config.adoMaxReviewItems));
 
         // Need relations for 'parent' mode (to read Hierarchy-Reverse links)
+        const extras = [
+          ...config.adoReviewExtraFields,
+          ...(extraFields ?? []),
+          ...(comparisonField ? [comparisonField] : []),
+        ];
+        const { fields: reviewFields, dropped, discoveryError } =
+          await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
         const items = await workItemService.fetchMany(ids, auth, {
-          fields: [...REVIEW_FIELDS],
+          fields: reviewFields,
           expand: comparisonMode === 'parent' ? 'relations' : undefined,
         });
 
@@ -373,6 +493,12 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           comparisonMode,
         }, 'ado_find_requirement_consistency_candidates succeeded');
 
+        const consistencyWarnings = [
+          ...resolution.warnings,
+          ...(dropped.length ? [{ kind: 'missing_fields', fields: dropped }] : []),
+          ...(discoveryError ? [{ kind: 'field_discovery_unavailable', message: discoveryError }] : []),
+        ];
+
         return {
           content: [{
             type: 'text' as const,
@@ -382,7 +508,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
               analyzed: result.totalAnalyzed,
               comparisonMode,
               ...result,
-              warnings: resolution.warnings,
+              warnings: consistencyWarnings,
             }, 2),
           }],
         };

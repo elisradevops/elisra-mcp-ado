@@ -126,7 +126,7 @@ export class AdoClient {
 
     const trialVersions: Array<string | null> = [configuredVersion, ...subLadder];
 
-    let lastStepDownError: unknown;
+    let lastStepDownError: unknown = new Error('All api-version trials exhausted');
     for (const version of trialVersions) {
       const params = { ...options.params };
       if (version === null) {

@@ -5,6 +5,8 @@ import type { AdoWorkItem } from '../../src/types/ado.js';
 import type { AttributeFinding, ReviewFinding } from '../../src/domain/requirementQuality.js';
 
 const svc = new RequirementReviewService();
+const DEFAULT_TOKENS = ['Affects', 'CoveredBy', 'TestedBy'];
+const defaultOpts = { traceabilityTokens: DEFAULT_TOKENS };
 
 function makeItem(fields: Record<string, unknown>, relations?: AdoWorkItem['relations']): AdoWorkItem {
   return { id: 1, fields: { 'System.Id': 1, 'System.WorkItemType': 'Requirement', ...fields }, relations };
@@ -19,7 +21,7 @@ function findAttr(findings: ReviewFinding, attr: string): AttributeFinding {
 describe('RequirementReviewService — clear', () => {
   it('missing title → status=missing, confidence=high', () => {
     const item = makeItem({ 'System.Title': '' });
-    const result = svc.review([item])[0];
+    const result = svc.review([item], defaultOpts)[0];
     const f = findAttr(result, 'clear');
     expect(f.status).toBe('missing');
     expect(f.confidence).toBe('high');
@@ -27,7 +29,7 @@ describe('RequirementReviewService — clear', () => {
 
   it('title with vague term → status=warn, confidence=medium', () => {
     const item = makeItem({ 'System.Title': 'The system shall support appropriate data formats' });
-    const f = findAttr(svc.review([item])[0], 'clear');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'clear');
     expect(f.status).toBe('warn');
     expect(f.confidence).toBe('medium');
     expect(f.evidence.some((e) => e.includes('appropriate'))).toBe(true);
@@ -38,20 +40,20 @@ describe('RequirementReviewService — clear', () => {
       'System.Title': 'The system shall process data',
       'System.Description': 'Process data as needed for optimal performance',
     });
-    const f = findAttr(svc.review([item])[0], 'clear');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'clear');
     expect(f.status).toBe('warn');
     expect(f.evidence.some((e) => e.toLowerCase().includes('as needed') || e.toLowerCase().includes('optimal'))).toBe(true);
   });
 
   it('clean title → status=ok', () => {
     const item = makeItem({ 'System.Title': 'The system shall encrypt data at rest using AES-256' });
-    const f = findAttr(svc.review([item])[0], 'clear');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'clear');
     expect(f.status).toBe('ok');
   });
 
   it('TBD in title → warn', () => {
     const item = makeItem({ 'System.Title': 'TBD - system shall process data' });
-    const f = findAttr(svc.review([item])[0], 'clear');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'clear');
     expect(f.status).toBe('warn');
   });
 });
@@ -64,7 +66,7 @@ describe('RequirementReviewService — singular', () => {
       'System.Title': 'Multi-req',
       'System.Description': 'The system shall do A. The system shall do B. The system shall do C. The system shall do D.',
     });
-    const f = findAttr(svc.review([item])[0], 'singular');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'singular');
     expect(f.status).toBe('warn');
     expect(f.confidence).toBe('medium');
   });
@@ -74,13 +76,13 @@ describe('RequirementReviewService — singular', () => {
       'System.Title': 'Login',
       'System.Description': 'The system shall authenticate users with username and password.',
     });
-    const f = findAttr(svc.review([item])[0], 'singular');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'singular');
     expect(f.status).toBe('ok');
   });
 
   it('no shall → ok', () => {
     const item = makeItem({ 'System.Title': 'Process data', 'System.Description': 'Processes input data.' });
-    const f = findAttr(svc.review([item])[0], 'singular');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'singular');
     expect(f.status).toBe('ok');
   });
 });
@@ -93,7 +95,7 @@ describe('RequirementReviewService — verifiable', () => {
       'System.Title': 'Encrypt data',
       'Microsoft.VSTS.Common.VerificationMethod': 'Test',
     });
-    const f = findAttr(svc.review([item])[0], 'verifiable');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'verifiable');
     expect(f.status).toBe('ok');
     expect(f.confidence).toBe('high');
     expect(f.evidence[0]).toContain('Test');
@@ -104,7 +106,7 @@ describe('RequirementReviewService — verifiable', () => {
       'System.Title': 'Fast response',
       'System.Description': 'The system shall respond within 200ms for all requests.',
     });
-    const f = findAttr(svc.review([item])[0], 'verifiable');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'verifiable');
     expect(f.status).toBe('ok');
     expect(f.confidence).toBe('medium');
   });
@@ -114,7 +116,7 @@ describe('RequirementReviewService — verifiable', () => {
       'System.Title': 'The system shall be fast',
       'System.Description': 'Process data quickly.',
     });
-    const f = findAttr(svc.review([item])[0], 'verifiable');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'verifiable');
     expect(f.status).toBe('warn');
     expect(f.confidence).toBe('medium');
   });
@@ -124,7 +126,7 @@ describe('RequirementReviewService — verifiable', () => {
       'System.Title': 'High availability',
       'System.Description': 'System shall be available 99.9% of the time.',
     });
-    const f = findAttr(svc.review([item])[0], 'verifiable');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'verifiable');
     expect(f.status).toBe('ok');
   });
 });
@@ -136,7 +138,7 @@ describe('RequirementReviewService — traceable', () => {
     const item = makeItem({ 'System.Title': 'Req' }, [
       { rel: 'Elisra.CoveredBy-Forward', url: 'https://tfs/wi/2', attributes: {} },
     ]);
-    const f = findAttr(svc.review([item])[0], 'traceable');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
     expect(f.status).toBe('ok');
     expect(f.confidence).toBe('high');
   });
@@ -145,7 +147,7 @@ describe('RequirementReviewService — traceable', () => {
     const item = makeItem({ 'System.Title': 'Req' }, [
       { rel: 'Microsoft.VSTS.Common.TestedBy-Forward', url: 'https://tfs/wi/3', attributes: {} },
     ]);
-    const f = findAttr(svc.review([item])[0], 'traceable');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
     expect(f.status).toBe('ok');
     expect(f.confidence).toBe('high');
   });
@@ -154,7 +156,7 @@ describe('RequirementReviewService — traceable', () => {
     const item = makeItem({ 'System.Title': 'Req' }, [
       { rel: 'System.LinkTypes.Affects-Forward', url: 'https://tfs/wi/4', attributes: {} },
     ]);
-    const f = findAttr(svc.review([item])[0], 'traceable');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
     expect(f.status).toBe('ok');
     expect(f.confidence).toBe('high');
   });
@@ -163,23 +165,41 @@ describe('RequirementReviewService — traceable', () => {
     const item = makeItem({ 'System.Title': 'Req' }, [
       { rel: 'System.LinkTypes.Hierarchy-Forward', url: 'https://tfs/wi/5', attributes: {} },
     ]);
-    const f = findAttr(svc.review([item])[0], 'traceable');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
     expect(f.status).toBe('warn');
     expect(f.confidence).toBe('high');
   });
 
   it('no relations at all → warn, high confidence', () => {
     const item = makeItem({ 'System.Title': 'Req' }, []);
-    const f = findAttr(svc.review([item])[0], 'traceable');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
     expect(f.status).toBe('warn');
     expect(f.confidence).toBe('high');
   });
 
   it('relations not fetched (undefined) → unknown, low confidence', () => {
     const item = makeItem({ 'System.Title': 'Req' }); // no relations field
-    const f = findAttr(svc.review([item])[0], 'traceable');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
     expect(f.status).toBe('unknown');
     expect(f.confidence).toBe('low');
+  });
+
+  it('custom token "Implements" recognizes Custom.Implements-Forward rel', () => {
+    const item = makeItem({ 'System.Title': 'Req' }, [
+      { rel: 'Custom.Implements-Forward', url: 'https://tfs/wi/9', attributes: {} },
+    ]);
+    const customOpts = { traceabilityTokens: ['Affects', 'CoveredBy', 'TestedBy', 'Implements'] };
+    const f = findAttr(svc.review([item], customOpts)[0], 'traceable');
+    expect(f.status).toBe('ok');
+    expect(f.confidence).toBe('high');
+  });
+
+  it('default tokens do NOT recognize Custom.Implements-Forward rel', () => {
+    const item = makeItem({ 'System.Title': 'Req' }, [
+      { rel: 'Custom.Implements-Forward', url: 'https://tfs/wi/9', attributes: {} },
+    ]);
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
+    expect(f.status).toBe('warn');
   });
 });
 
@@ -188,14 +208,14 @@ describe('RequirementReviewService — traceable', () => {
 describe('RequirementReviewService — complete', () => {
   it('missing description → missing, high confidence', () => {
     const item = makeItem({ 'System.Title': 'Req', 'System.Description': '' });
-    const f = findAttr(svc.review([item])[0], 'complete');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'complete');
     expect(f.status).toBe('missing');
     expect(f.confidence).toBe('high');
   });
 
   it('very short description → warn, medium', () => {
     const item = makeItem({ 'System.Title': 'Req', 'System.Description': 'Short.' });
-    const f = findAttr(svc.review([item])[0], 'complete');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'complete');
     expect(f.status).toBe('warn');
     expect(f.confidence).toBe('medium');
   });
@@ -206,7 +226,7 @@ describe('RequirementReviewService — complete', () => {
       'System.Description': 'The system shall authenticate users using username and password credentials stored securely.',
       'Microsoft.VSTS.Common.AcceptanceCriteria': '',
     });
-    const f = findAttr(svc.review([item])[0], 'complete');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'complete');
     expect(f.status).toBe('warn');
     expect(f.evidence.some((e) => e.includes('AcceptanceCriteria'))).toBe(true);
   });
@@ -217,7 +237,7 @@ describe('RequirementReviewService — complete', () => {
       'System.Description': 'The system shall authenticate users using username and password credentials stored securely in a hash.',
       'Microsoft.VSTS.Common.AcceptanceCriteria': 'Given valid credentials, user logs in successfully.',
     });
-    const f = findAttr(svc.review([item])[0], 'complete');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'complete');
     expect(f.status).toBe('ok');
   });
 
@@ -227,7 +247,7 @@ describe('RequirementReviewService — complete', () => {
       // HTML with lots of tags but short text content
       'System.Description': '<p><b>Hi.</b></p>',
     });
-    const f = findAttr(svc.review([item])[0], 'complete');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'complete');
     expect(f.status).toBe('warn'); // "Hi." is < 30 chars after stripping
   });
 });
@@ -237,7 +257,7 @@ describe('RequirementReviewService — complete', () => {
 describe('RequirementReviewService — consistent', () => {
   it('always unknown for single item', () => {
     const item = makeItem({ 'System.Title': 'Req' });
-    const f = findAttr(svc.review([item])[0], 'consistent');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'consistent');
     expect(f.status).toBe('unknown');
     expect(f.confidence).toBe('low');
   });
@@ -248,14 +268,14 @@ describe('RequirementReviewService — consistent', () => {
 describe('RequirementReviewService — feasible', () => {
   it('no risk terms → unknown, low confidence', () => {
     const item = makeItem({ 'System.Title': 'Req', 'System.Description': 'Process data efficiently.' });
-    const f = findAttr(svc.review([item])[0], 'feasible');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'feasible');
     expect(f.status).toBe('unknown');
     expect(f.confidence).toBe('low');
   });
 
   it('risk term in title → warn, low confidence', () => {
     const item = makeItem({ 'System.Title': 'System shall guarantee 100% uptime' });
-    const f = findAttr(svc.review([item])[0], 'feasible');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'feasible');
     expect(f.status).toBe('warn');
     expect(f.confidence).toBe('low');
     expect(f.evidence.some((e) => e.includes('guaranteed') || e.includes('100%'))).toBe(true);
@@ -266,7 +286,7 @@ describe('RequirementReviewService — feasible', () => {
       'System.Title': 'Live updates',
       'System.Description': 'The system shall provide real-time updates to all connected clients.',
     });
-    const f = findAttr(svc.review([item])[0], 'feasible');
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'feasible');
     expect(f.status).toBe('warn');
   });
 });
@@ -326,7 +346,7 @@ describe('summarizeFindings', () => {
       makeItem({ 'System.Title': '', 'System.Description': '' }, []),          // multiple issues → high
       makeItem({ 'System.Title': 'Good req encrypted with AES-256 in 200ms' }, // decent item
         [{ rel: 'Elisra.CoveredBy-Forward', url: 'https://tfs/wi/2', attributes: {} }]),
-    ]);
+    ], defaultOpts);
     const summary = summarizeFindings(findings);
     expect(summary.totalReviewed).toBe(2);
     expect(summary.byRisk.high).toBeGreaterThanOrEqual(1);

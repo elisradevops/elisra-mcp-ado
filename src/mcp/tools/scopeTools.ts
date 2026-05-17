@@ -82,6 +82,12 @@ const SourceSchema = z.discriminatedUnion('type', [
   }),
 ]);
 
+const ValidatedSourceSchema = SourceSchema.superRefine((v, ctx) => {
+  if (v.type === 'fieldFilters' && !v.filters?.length && !v.filterTree) {
+    ctx.addIssue({ code: 'custom', message: 'fieldFilters source requires either filters or filterTree.' });
+  }
+});
+
 export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
   const { config, logger, wiqlClient, workItemService, reviewScopeResolver } = deps;
 
@@ -95,7 +101,7 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name. Required for wiql and fieldFilters sources.'),
-      source: SourceSchema,
+      source: ValidatedSourceSchema,
       responseMode: z.enum(['overview', 'ids']).optional().default('overview'),
       maxIds: z.number().int().positive().optional().default(500).describe('Cap on returned IDs in ids mode.'),
     },
@@ -184,7 +190,7 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
-      source: SourceSchema,
+      source: ValidatedSourceSchema,
       groupBy: z.array(z.string()).optional().default(['System.WorkItemType', 'System.State']).describe(
         'Fields to group by. Must be in the compact field set or fetched fields.'
       ),

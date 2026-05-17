@@ -15,17 +15,15 @@ export const REVIEW_FIELDS = [
   'System.Description',
   'System.AssignedTo',
   'System.ChangedDate',
+  // These fields are filtered against the live ADO field catalog in reviewTools.ts
+  // before the workitemsbatch call, so collection-missing fields are dropped at runtime.
   'Microsoft.VSTS.Common.VerificationMethod',
   'Microsoft.VSTS.Common.AcceptanceCriteria',
 ] as const;
 
-const TRACEABILITY_REL_TOKENS = ['Affects', 'CoveredBy', 'TestedBy'];
-
-function hasTraceabilityLink(item: AdoWorkItem): boolean | null {
+function hasTraceabilityLink(item: AdoWorkItem, tokens: readonly string[]): boolean | null {
   if (!item.relations) return null; // relations not fetched
-  return item.relations.some((r) =>
-    TRACEABILITY_REL_TOKENS.some((token) => r.rel.includes(token))
-  );
+  return item.relations.some((r) => tokens.some((token) => r.rel.includes(token)));
 }
 
 function fieldText(item: AdoWorkItem, field: string): string {
@@ -156,8 +154,8 @@ function reviewVerifiable(item: AdoWorkItem): AttributeFinding {
   };
 }
 
-function reviewTraceable(item: AdoWorkItem): AttributeFinding {
-  const traceability = hasTraceabilityLink(item);
+function reviewTraceable(item: AdoWorkItem, tokens: readonly string[]): AttributeFinding {
+  const traceability = hasTraceabilityLink(item, tokens);
 
   if (traceability === null) {
     return {
@@ -172,7 +170,7 @@ function reviewTraceable(item: AdoWorkItem): AttributeFinding {
 
   if (traceability) {
     const links = (item.relations ?? [])
-      .filter((r) => TRACEABILITY_REL_TOKENS.some((t) => r.rel.includes(t)))
+      .filter((r) => tokens.some((t) => r.rel.includes(t)))
       .map((r) => r.rel);
 
     return {
@@ -286,16 +284,16 @@ function reviewFeasible(item: AdoWorkItem): AttributeFinding {
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 export class RequirementReviewService {
-  review(items: AdoWorkItem[]): ReviewFinding[] {
-    return items.map((item) => this.reviewItem(item));
+  review(items: AdoWorkItem[], opts: { traceabilityTokens: readonly string[] }): ReviewFinding[] {
+    return items.map((item) => this.reviewItem(item, opts.traceabilityTokens));
   }
 
-  private reviewItem(item: AdoWorkItem): ReviewFinding {
+  private reviewItem(item: AdoWorkItem, tokens: readonly string[]): ReviewFinding {
     const findings: AttributeFinding[] = [
       reviewClear(item),
       reviewSingular(item),
       reviewVerifiable(item),
-      reviewTraceable(item),
+      reviewTraceable(item, tokens),
       reviewComplete(item),
       reviewConsistent(item),
       reviewFeasible(item),

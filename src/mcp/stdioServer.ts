@@ -17,7 +17,7 @@ export async function createStdioServer(config: AppConfig, logger: Logger): Prom
   // Rewrite `definitions` → `$defs` in every tool's inputSchema so that mcpo
   // (and any JSON Schema draft 2019-09+ consumer) resolves $ref correctly.
   // The MCP SDK's toJsonSchemaCompat emits `definitions` by default; mcpo expects `$defs`.
-  installSchemaCompatShim(server);
+  installSchemaCompatShim(server, logger);
 
   const transport = new StdioServerTransport();
 
@@ -36,11 +36,14 @@ export async function createStdioServer(config: AppConfig, logger: Logger): Prom
   logger.info({}, 'elisra-mcp-ado stdio transport connected');
 }
 
-function installSchemaCompatShim(server: McpServer): void {
+function installSchemaCompatShim(server: McpServer, logger: Logger): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const innerServer = (server as any).server as { _requestHandlers: Map<string, (...args: unknown[]) => unknown> };
   const origHandler = innerServer._requestHandlers.get('tools/list');
-  if (!origHandler) return;
+  if (!origHandler) {
+    logger.warn({}, 'installSchemaCompatShim: tools/list handler not found — schema compat not applied');
+    return;
+  }
 
   innerServer._requestHandlers.set('tools/list', async (...args: unknown[]) => {
     const result = await (origHandler as (...a: unknown[]) => Promise<{ tools?: Array<{ inputSchema?: unknown }> }>)(...args);

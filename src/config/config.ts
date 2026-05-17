@@ -9,6 +9,8 @@ export interface AppConfig {
   adoAllowUnknownFields: boolean;
   adoFullResponseMaxItems: number;
   adoMaxReviewItems: number;
+  adoReviewExtraFields: string[];
+  adoTraceabilityLinkTokens: string[];
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
   logFile?: string;
   mcpoApiKey?: string;
