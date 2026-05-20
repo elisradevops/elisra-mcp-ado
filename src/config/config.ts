@@ -15,4 +15,12 @@ export interface AppConfig {
   logFile?: string;
   mcpoApiKey?: string;
   adoPat?: string;
+  // HTTP transport
+  mcpTransport: 'stdio' | 'http';
+  mcpHttpHost: string;
+  mcpHttpPort: number;
+  mcpHttpPath: string;
+  mcpAllowedHosts: string[];
+  mcpAllowedOrigins: string[];
+  mcpHttpBearerToken?: string;
 }

@@ -1,17 +1,19 @@
 # Kubernetes Deployment
 
-Reference manifests for running `elisra-mcp-ado` (and the mcpo HTTP bridge) in Kubernetes. These are starting points — adapt namespaces, resource limits, and image tags to your cluster.
+Reference manifests for running `elisra-mcp-ado` in Kubernetes. These are starting points — adapt namespaces, resource limits, and image tags to your cluster.
 
-> **Note:** In v1, the MCP server is stdio-only. The Pod below wraps the server with mcpo so it is reachable over HTTP. An HTTP-native MCP transport is reserved for a future version.
+The server runs as a native MCP Streamable HTTP endpoint on port `3000`. No `mcpo` sidecar is required.
 
 ---
 
-## Auth Mode Choice
+## Auth Mode
 
-| Mode | Kubernetes implication |
-|---|---|
-| `per_request_pat` (recommended) | Pod holds no credential. Each tool call supplies a PAT in the request body. No Secret is needed for the PAT itself. |
-| `server_pat` | A single PAT is stored in a Kubernetes `Secret` and injected as `ADO_PAT`. All requests run under that identity. |
+HTTP mode requires `server_pat`. A single ADO PAT lives in a Kubernetes `Secret` and is injected as `ADO_PAT`. All MCP tool calls run under that identity. Users never supply or see the PAT.
+
+| Mode | HTTP transport | Note |
+|---|---|---|
+| `server_pat` | **Required** | PAT in cluster Secret; all tool calls share one identity |
+| `per_request_pat` | Not supported | stdio/local dev only |
 
 ---
 
@@ -38,23 +40,24 @@ data:
   ADO_ORG_URL: "https://tfs.corp.local/tfs/DefaultCollection"
   ADO_API_VERSION: "7.0"
   ADO_BATCH_SIZE: "200"
-  ADO_AUTH_MODE: "per_request_pat"   # or "server_pat"
+  ADO_AUTH_MODE: "server_pat"
   ADO_READ_ONLY: "true"
   ADO_ENABLE_DEBUG_OUTPUT: "false"
   ADO_REQUEST_TIMEOUT_MS: "30000"
   ADO_ALLOW_UNKNOWN_FIELDS: "false"
   ADO_FULL_RESPONSE_MAX_ITEMS: "50"
   LOG_LEVEL: "info"
+  MCP_TRANSPORT: "http"
+  MCP_HTTP_HOST: "0.0.0.0"
+  MCP_HTTP_PORT: "3000"
+  MCP_HTTP_PATH: "/mcp"
   NODE_EXTRA_CA_CERTS: "/etc/ssl/certs/elisra-ca.pem"
-  MCPO_PORT: "8000"
 ```
 
 ---
 
 ## Secret — sensitive values
 
-### Per-request PAT mode (no ADO credential in cluster)
-
 ```yaml
 apiVersion: v1
 kind: Secret
@@ -63,28 +66,17 @@ metadata:
   namespace: mcp
 type: Opaque
 stringData:
-  MCPO_API_KEY: "replace-with-a-strong-random-key"
-```
-
-### Server PAT mode (single shared identity)
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: elisra-mcp-ado-secrets
-  namespace: mcp
-type: Opaque
-stringData:
-  MCPO_API_KEY: "replace-with-a-strong-random-key"
   ADO_PAT: "replace-with-your-ado-personal-access-token"
+  MCP_HTTP_BEARER_TOKEN: "replace-with-a-strong-random-key"
 ```
+
+`MCP_HTTP_BEARER_TOKEN` is the credential Open WebUI sends as `Authorization: Bearer ...`. Rotate it without image rebuild by updating the Secret and restarting the Pod.
 
 ---
 
 ## Corporate CA Certificate
 
-If your ADO Server uses a self-signed or internal CA, mount the certificate as a `ConfigMap` (it is not a secret — CA certs are public).
+If your ADO Server uses a self-signed or internal CA, mount the certificate as a `ConfigMap` (CA certs are public — not a secret).
 
 ```yaml
 apiVersion: v1
@@ -99,7 +91,7 @@ data:
     -----END CERTIFICATE-----
 ```
 
-The Deployment below mounts this at `NODE_EXTRA_CA_CERTS=/etc/ssl/certs/elisra-ca.pem`.
+The Deployment below mounts this at the path set in `NODE_EXTRA_CA_CERTS`.
 
 If you do not have an internal CA, remove the `volumes`/`volumeMounts` entries for `corp-ca`.
 
@@ -131,12 +123,12 @@ spec:
         runAsGroup: 1000
         fsGroup: 1000
       containers:
-        - name: mcp-mcpo
-          image: elisradevops/elisra-mcp-ado-mcpo:latest
+        - name: elisra-mcp-ado
+          image: elisradevops/elisra-mcp-ado:latest
           imagePullPolicy: Always
           ports:
-            - name: http
-              containerPort: 8000
+            - name: mcp-http
+              containerPort: 3000
               protocol: TCP
           envFrom:
             - configMapRef:
@@ -157,21 +149,15 @@ spec:
               memory: "512Mi"
           readinessProbe:
             httpGet:
-              path: /openapi.json
-              port: 8000
-              httpHeaders:
-                - name: Authorization
-                  value: "Bearer $(MCPO_API_KEY)"
+              path: /healthz
+              port: 3000
             initialDelaySeconds: 5
             periodSeconds: 15
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /openapi.json
-              port: 8000
-              httpHeaders:
-                - name: Authorization
-                  value: "Bearer $(MCPO_API_KEY)"
+              path: /healthz
+              port: 3000
             initialDelaySeconds: 10
             periodSeconds: 30
             failureThreshold: 3
@@ -181,7 +167,7 @@ spec:
             name: elisra-corp-ca
 ```
 
-> **Important:** The `readinessProbe` and `livenessProbe` use `$(MCPO_API_KEY)` variable expansion. Kubernetes supports env var substitution inside the same container spec when the referenced var is defined in `envFrom` or `env`. Verify this works in your cluster version (≥1.14); otherwise hardcode the key in the probe or use an exec probe.
+The `/healthz` probe requires no authentication. It returns `{"status":"ok"}` when the server is ready.
 
 ---
 
@@ -197,14 +183,14 @@ spec:
   selector:
     app: elisra-mcp-ado
   ports:
-    - name: http
-      port: 80
-      targetPort: 8000
+    - name: mcp-http
+      port: 3000
+      targetPort: 3000
       protocol: TCP
   type: ClusterIP
 ```
 
-Expose via `Ingress` or `LoadBalancer` if external access is needed.
+Change `type` to `LoadBalancer` or add an `Ingress` if external access is needed. TLS termination is handled at the ingress layer — the Node process serves plain HTTP.
 
 ---
 
@@ -230,7 +216,7 @@ spec:
               service:
                 name: elisra-mcp-ado
                 port:
-                  name: http
+                  name: mcp-http
   tls:
     - hosts:
         - mcp-ado.corp.local
@@ -261,12 +247,21 @@ kubectl apply -f ingress.yaml             # optional
 # Pod is running
 kubectl get pods -n mcp
 
-# Logs (startup probe, first ADO connection attempt)
+# Logs (startup, first ADO connection attempt)
 kubectl logs -n mcp -l app=elisra-mcp-ado
 
-# mcpo HTTP bridge is reachable
-kubectl port-forward -n mcp svc/elisra-mcp-ado 9090:80
-curl -H "Authorization: Bearer <MCPO_API_KEY>" http://localhost:9090/openapi.json | jq '.info'
+# MCP endpoint is reachable (port-forward then test)
+kubectl port-forward -n mcp svc/elisra-mcp-ado 3000:3000
+
+curl -fsS http://localhost:3000/healthz
+# {"status":"ok"}
+
+MCP_BEARER=$(kubectl get secret elisra-mcp-ado-secrets -n mcp -o jsonpath='{.data.MCP_HTTP_BEARER_TOKEN}' | base64 -d)
+curl -fsS \
+  -H "Authorization: Bearer $MCP_BEARER" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  http://localhost:3000/mcp | jq '.result.tools[].name'
 ```
 
 ---
@@ -274,8 +269,15 @@ curl -H "Authorization: Bearer <MCPO_API_KEY>" http://localhost:9090/openapi.jso
 ## Security Notes
 
 - Pod runs as non-root (`runAsUser: 1000`). No capability escalation.
-- `ADO_PAT` (if used) lives in a Kubernetes `Secret` — not a `ConfigMap`. Ensure RBAC limits who can read it.
-- `MCPO_API_KEY` is also in the `Secret`. Rotate it if compromised without image rebuild.
+- `ADO_PAT` and `MCP_HTTP_BEARER_TOKEN` live in a Kubernetes `Secret`. Ensure RBAC limits who can read it.
+- PATs and Authorization headers are redacted in all log output.
 - The corporate CA cert is in a `ConfigMap` (public data) — intentional. Do not mix with the `Secret`.
-- `ADO_READ_ONLY=true` is set in the `ConfigMap`. Never set it to `false` — no write tools exist in v1 and the value is enforced at the config layer.
-- For per-request PAT mode: no PAT touches the cluster. Each caller supplies their own PAT per tool call. This is the recommended production posture.
+- `ADO_READ_ONLY=true` is set in the ConfigMap. Never set it to `false` — no write tools exist and the value is enforced at the config layer.
+
+---
+
+## Legacy: mcpo Bridge
+
+If you are still routing through the `mcpo` OpenAPI bridge (older Open WebUI versions), swap the container image to `elisradevops/elisra-mcp-ado-mcpo:latest`, change the container port to `8000`, and add `MCPO_API_KEY` to the Secret. The probes should hit `/openapi.json` with an `Authorization: Bearer $(MCPO_API_KEY)` header.
+
+For new deployments, use the native HTTP mode above.

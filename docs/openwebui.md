@@ -1,6 +1,6 @@
 # Open WebUI Integration
 
-`elisra-mcp-ado` exposes a stdio MCP transport. Open WebUI requires an HTTP endpoint, so a `mcpo` sidecar bridges the gap.
+`elisra-mcp-ado` exposes a native MCP Streamable HTTP endpoint (`/mcp`). No sidecar or bridge required.
 
 ## Quick Start
 
@@ -14,103 +14,101 @@ Edit `.env` — minimum required fields:
 
 ```bash
 ADO_ORG_URL=https://tfs.your-company.local/tfs/DefaultCollection
-MCPO_API_KEY=choose-a-strong-random-key
+ADO_PAT=your-service-account-pat
+MCP_HTTP_BEARER_TOKEN=choose-a-strong-random-key
 ```
 
 If your TFS uses a corporate CA certificate:
 
 ```bash
-# Path to your corp CA PEM on the host
 HOST_CA_CERT_PATH=/etc/ssl/certs/your-corp-ca.pem
 NODE_EXTRA_CA_CERTS=/etc/ssl/certs/elisra-ca.pem
 ```
 
-### 2. Start the stack
+### 2. Start the server
 
 ```bash
 docker compose up -d
 ```
 
-Two containers start:
-- `elisra-mcp-ado` — MCP server (stdio, no exposed port)
-- `elisra-mcp-ado-mcpo` — HTTP bridge on port **9090**
+One container starts: `elisra-mcp-ado` — native MCP HTTP on port **3000**.
 
-Verify the bridge is up:
+Verify it is up:
 
 ```bash
-curl -s -H "Authorization: Bearer $MCPO_API_KEY" http://localhost:9090/openapi.json | jq '.info'
+curl -fsS http://localhost:3000/healthz
+# {"status":"ok"}
+```
+
+Verify the MCP endpoint accepts your bearer token:
+
+```bash
+curl -fsS \
+  -H "Authorization: Bearer $MCP_HTTP_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  http://localhost:3000/mcp | jq '.result.tools[].name'
 ```
 
 ### 3. Add to Open WebUI
 
 1. Open Open WebUI → **Settings → Tools**
-2. Click **Add Tool Server**
-3. Fill in:
-   - **URL**: `http://localhost:9090` (or replace with your host/IP)
-   - **API Key**: the value you set in `MCPO_API_KEY`
-4. Click **Save**
+2. Click **Add Tool**
+3. Set the **Type** to **MCP**
+4. Fill in:
+   - **URL**: `http://<your-server-ip>:3000/mcp`
+   - **Authorization Header**: `Bearer <MCP_HTTP_BEARER_TOKEN>`
+5. Click **Save**
 
-Open WebUI will discover all MCP tools automatically from the `/openapi.json` endpoint.
+Open WebUI discovers all tools automatically via the MCP `tools/list` call.
 
 ### 4. Grant tool access to a model
 
 1. Open a chat with any model
 2. Enable **Tools** in the model settings or via the chat toolbar
-3. The `elisra-mcp-ado` tools appear in the tool list (prefixed with their names, e.g. `ado_ping`)
+3. The `elisra-mcp-ado` tools appear in the tool list (e.g. `ado_ping`, `ado_query_work_items`)
 
 ## Authentication
 
-### Per-request PAT (default, recommended)
+### ADO authentication (server-side, operator-managed)
 
-With `ADO_AUTH_MODE=per_request_pat` (the default), each tool call accepts an optional `pat` argument.
-
-In Open WebUI, pass the PAT as a tool argument when invoking a tool:
-
-```
-Use ado_ping with pat=<your-pat>
-```
-
-For production, prefer configuring a connection-level secret (see below) so the PAT is not visible in the chat transcript.
-
-### Server PAT (service account / automated use)
-
-For automation, switch to server-side PAT:
+In HTTP mode, ADO authentication is **always server-side**. The `ADO_PAT` is set by the operator in the deployment environment and is never exposed in chat or in the MCP protocol.
 
 ```bash
-# .env
+# .env (operator sets this — not visible to Open WebUI users)
 ADO_AUTH_MODE=server_pat
 ADO_PAT=your-service-account-pat
 ```
 
-The PAT is loaded from the environment at startup. Tool calls do not need a `pat` argument.
+Tool calls do **not** accept a `pat` argument when the server is in `server_pat` mode. If a model attempts to pass one, it is ignored.
 
-**Security:** Never set `ADO_PAT` in `per_request_pat` mode — the server will warn and ignore it.
+### MCP bearer token (tool-server access control)
 
-### Open WebUI connection-level secret (recommended for production)
+`MCP_HTTP_BEARER_TOKEN` is the credential that protects the `/mcp` endpoint itself. Set it in Open WebUI as the Authorization header value. It is separate from the ADO PAT.
 
-Instead of passing a PAT in chat, configure the PAT as an Open WebUI connection-level secret:
-1. **Settings → Connections → Tool Servers** → edit the `elisra-mcp-ado` entry
-2. Under **Headers**, add: `X-Forwarded-Pat: <your-pat>`
-3. On the server side, switch to `trusted_header_future` mode (not yet implemented in v1)
-
-Until v1 adds trusted-header support, use `server_pat` mode for production.
+**Security notes:**
+- The bearer token controls access to the MCP server; the ADO PAT controls access to Azure DevOps.
+- The ADO PAT never leaves the server. It will not appear in chat transcripts, logs, or MCP responses.
+- PATs and Authorization headers are redacted in all server log output.
 
 ## Verifying the Integration
 
 ### ado_ping
 
 ```
-Call ado_ping (with pat=<your-pat> if using per_request_pat mode)
+Call ado_ping
 ```
 
 Expected response:
 ```json
 {
   "collection": "https://tfs.your-company.local/tfs/DefaultCollection",
-  "projects": ["ProjectA", "ProjectB", "..."],
+  "projects": ["ProjectA", "ProjectB"],
   "apiVersion": "7.0"
 }
 ```
+
+This verifies server-to-ADO connectivity. If the ADO PAT is wrong or the `ADO_ORG_URL` is incorrect, this call returns an error before any other tool is attempted.
 
 ### ado_discover_fields
 
@@ -118,19 +116,47 @@ Expected response:
 Call ado_discover_fields with project="YourProject"
 ```
 
-Returns the field catalog. Confirms ADO connectivity and field metadata access.
+Returns the field catalog for the project. Confirms field metadata access.
 
-## Logs
+## Operator Reference
+
+### Required environment variables (HTTP mode)
+
+| Variable | Description |
+|---|---|
+| `ADO_ORG_URL` | Full collection URL, e.g. `https://tfs.corp.local/tfs/DefaultCollection` |
+| `ADO_PAT` | Service account PAT with Read access to Work Items |
+| `MCP_HTTP_BEARER_TOKEN` | Bearer token for the `/mcp` endpoint |
+
+### Optional environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `MCP_HTTP_HOST` | `0.0.0.0` | Bind address inside container |
+| `MCP_HTTP_PORT` | `3000` | Listen port |
+| `MCP_HTTP_PATH` | `/mcp` | MCP endpoint path |
+| `MCP_ALLOWED_HOSTS` | *(empty)* | Comma-separated allowed `Host` header values (DNS rebinding protection) |
+| `ADO_API_VERSION` | `7.0` | ADO REST API version (TFS 2018 → `4.1`) |
+| `NODE_EXTRA_CA_CERTS` | *(unset)* | Path to corporate CA PEM inside container |
+| `LOG_LEVEL` | `info` | Log verbosity |
+
+### Corporate CA certificates (on-prem TFS)
 
 ```bash
-# MCP server logs
-docker logs -f elisra-mcp-ado
-
-# mcpo bridge logs
-docker logs -f elisra-mcp-ado-mcpo
+# Mount your corp CA into the container
+HOST_CA_CERT_PATH=/etc/ssl/certs/your-corp-ca.pem
+NODE_EXTRA_CA_CERTS=/etc/ssl/certs/elisra-ca.pem
 ```
 
-PATs and Authorization headers are redacted in all log output.
+See `docs/onprem-ado.md` for full TLS setup.
+
+### Distinguishing error sources
+
+| Error | Source | Check |
+|---|---|---|
+| `401` from `/mcp` | MCP bearer token wrong | Verify `MCP_HTTP_BEARER_TOKEN` matches the header sent by Open WebUI |
+| `401` / `403` from `ado_ping` | ADO PAT rejected | Verify `ADO_PAT` has Read access to the target collection |
+| TLS error in logs | Corporate CA not trusted | Set `NODE_EXTRA_CA_CERTS` and mount the CA cert |
 
 ## Updating
 
@@ -147,30 +173,39 @@ docker compose up -d
 Error: unable to verify the first certificate
 ```
 
-Mount your corporate CA and set `NODE_EXTRA_CA_CERTS`:
+Mount your corporate CA and set `NODE_EXTRA_CA_CERTS`. See `docs/onprem-ado.md`.
 
-```bash
-# .env
-HOST_CA_CERT_PATH=/path/to/your-corp-ca.pem
-NODE_EXTRA_CA_CERTS=/etc/ssl/certs/elisra-ca.pem
-```
+### 401 from the MCP endpoint
 
-The server fails loud on TLS errors — there is no `rejectUnauthorized:false` fallback by design.
+The `Authorization: Bearer ...` header sent by Open WebUI does not match `MCP_HTTP_BEARER_TOKEN`. Both values must match exactly (case-sensitive). Re-check the Open WebUI tool configuration.
 
 ### 401 / 403 from ADO
 
-- Verify the PAT has **Read** access to Work Items on the target project.
-- Confirm `ADO_ORG_URL` points to the correct collection (e.g. `https://tfs.company.local/tfs/DefaultCollection`, not just the server root).
+- Verify `ADO_PAT` has **Read** access to Work Items on the target project.
+- Confirm `ADO_ORG_URL` points to the correct collection (e.g. `https://tfs.company.local/tfs/DefaultCollection`, not the server root).
 
-### mcpo returns 401
+### Port 3000 already in use
 
-Confirm the `Authorization: Bearer <key>` header matches `MCPO_API_KEY` exactly (case-sensitive).
+Set `MCP_HTTP_PORT` in `.env`:
 
-### Port 9090 already in use
-
-Change the host port in `docker-compose.yml` or set `MCPO_PORT`:
-
-```yaml
-ports:
-  - "${MCPO_PORT:-9090}:8000"
+```bash
+MCP_HTTP_PORT=3001
 ```
+
+---
+
+## Legacy: mcpo Bridge
+
+If you are still using an older Open WebUI version that does not support native MCP, the `mcpo` OpenAPI bridge is available as a legacy option.
+
+Start with the `legacy` profile:
+
+```bash
+docker compose --profile legacy up -d
+```
+
+This starts `elisra-mcp-ado-mcpo` on port **9090** (configurable via `MCPO_PORT`). In Open WebUI, add a **Tool Server** with:
+- **URL**: `http://<host>:9090`
+- **API Key**: value of `MCPO_API_KEY`
+
+The `mcpo` bridge does **not** support `server_pat` mode out of the box — each tool call requires a `pat` argument. For production, migrate to native MCP HTTP mode.
