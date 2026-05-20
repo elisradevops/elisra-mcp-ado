@@ -1,17 +1,19 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # elisra-mcp-ado — Azure DevOps Server / TFS MCP server
 #
-# Two services:
-#   elisra-mcp-ado       — MCP server (stdio transport)
-#   elisra-mcp-ado-mcpo  — mcpo HTTP bridge for Open WebUI
+# Default: native MCP Streamable HTTP on port 3000.
+# Open WebUI: add MCP external tool with URL http://<host>:3000/mcp
+#             and header  Authorization: Bearer <MCP_HTTP_BEARER_TOKEN>
 #
 # Quick start:
-#   cp .env.example .env && vi .env
+#   cp .env.example .env && vi .env   # set ADO_ORG_URL, ADO_PAT, MCP_HTTP_BEARER_TOKEN
 #   docker compose up -d
-#   # Then add http://localhost:9090 as a tool server in Open WebUI
 #
-# TLS: mount your corporate CA cert at the path set in NODE_EXTRA_CA_CERTS.
+# TLS: terminate at your reverse proxy / Kubernetes ingress.
+#   Mount your corporate CA cert at the path set in NODE_EXTRA_CA_CERTS:
 #   mkdir -p ./certs && cp /path/to/ca.pem ./certs/elisra-ca.pem
+#
+# Legacy mcpo bridge: docker compose --profile legacy up -d
 # ──────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -21,38 +23,43 @@ services:
       dockerfile: docker/Dockerfile
     image: elisradevops/elisra-mcp-ado:latest
     container_name: elisra-mcp-ado
-    stdin_open: true
-    tty: false
     restart: unless-stopped
+    ports:
+      - "${MCP_HTTP_PORT:-3000}:3000"
     environment:
       ADO_ORG_URL: ${ADO_ORG_URL:?ADO_ORG_URL is required}
       ADO_API_VERSION: ${ADO_API_VERSION:-7.0}
       ADO_BATCH_SIZE: ${ADO_BATCH_SIZE:-200}
-      ADO_AUTH_MODE: ${ADO_AUTH_MODE:-per_request_pat}
+      ADO_AUTH_MODE: "server_pat"
+      ADO_PAT: ${ADO_PAT:?ADO_PAT is required}
       ADO_READ_ONLY: "true"
       ADO_ENABLE_DEBUG_OUTPUT: ${ADO_ENABLE_DEBUG_OUTPUT:-false}
       ADO_REQUEST_TIMEOUT_MS: ${ADO_REQUEST_TIMEOUT_MS:-30000}
       ADO_ALLOW_UNKNOWN_FIELDS: ${ADO_ALLOW_UNKNOWN_FIELDS:-false}
       ADO_FULL_RESPONSE_MAX_ITEMS: ${ADO_FULL_RESPONSE_MAX_ITEMS:-50}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      MCP_TRANSPORT: "http"
+      MCP_HTTP_HOST: "0.0.0.0"
+      MCP_HTTP_PORT: "3000"
+      MCP_HTTP_PATH: "/mcp"
+      MCP_HTTP_BEARER_TOKEN: ${MCP_HTTP_BEARER_TOKEN:?MCP_HTTP_BEARER_TOKEN is required}
       # NODE_EXTRA_CA_CERTS — path inside container; set if your TFS uses a corporate cert
       NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS:-}
-      # ADO_PAT — only needed when ADO_AUTH_MODE=server_pat
-      # ADO_PAT: ${ADO_PAT:-}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     volumes:
       # Mount your corporate CA cert (optional — required for on-prem TLS)
       - ${HOST_CA_CERT_PATH:-/dev/null}:${NODE_EXTRA_CA_CERTS:-/etc/ssl/certs/elisra-ca.pem}:ro
 
-  # ─── mcpo HTTP bridge — wraps the stdio MCP server for Open WebUI ───────────
-  # mcpo spawns the MCP server as a subprocess.
-  # This image requires Node.js — we use our own built image as the base so
-  # mcpo can exec "node dist/index.js" directly.
-  #
-  # Alternative: if you prefer the upstream mcpo image, set it as a separate
-  # container and pass the command via docker exec (requires docker socket mount).
-  #
-  # Usage: add http://localhost:9090 as a tool server in Open WebUI settings.
+  # ─── Legacy: mcpo HTTP bridge ────────────────────────────────────────────────
+  # Only needed when routing through the mcpo OpenAPI bridge.
+  # Start with: docker compose --profile legacy up -d
   elisra-mcp-ado-mcpo:
+    profiles: ["legacy"]
     build:
       context: .
       dockerfile: docker/mcpo.Dockerfile

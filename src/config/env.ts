@@ -46,6 +46,21 @@ const envSchema = z.object({
   LOG_FILE: z.string().optional(),
   MCPO_API_KEY: z.string().optional(),
   ADO_PAT: z.string().optional(),
+  MCP_TRANSPORT: z.enum(['stdio', 'http']).default('stdio'),
+  MCP_HTTP_HOST: z.string().default('127.0.0.1'),
+  MCP_HTTP_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  MCP_HTTP_PATH: z.string().default('/mcp'),
+  MCP_ALLOWED_HOSTS: z
+    .string()
+    .optional()
+    .default('')
+    .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
+  MCP_ALLOWED_ORIGINS: z
+    .string()
+    .optional()
+    .default('')
+    .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
+  MCP_HTTP_BEARER_TOKEN: z.string().optional(),
 });
 
 type ParsedEnv = z.infer<typeof envSchema>;
@@ -68,6 +83,13 @@ function mapToConfig(env: ParsedEnv): AppConfig {
     logFile: env.LOG_FILE,
     mcpoApiKey: env.MCPO_API_KEY,
     adoPat: env.ADO_PAT,
+    mcpTransport: env.MCP_TRANSPORT,
+    mcpHttpHost: env.MCP_HTTP_HOST,
+    mcpHttpPort: env.MCP_HTTP_PORT,
+    mcpHttpPath: env.MCP_HTTP_PATH,
+    mcpAllowedHosts: env.MCP_ALLOWED_HOSTS,
+    mcpAllowedOrigins: env.MCP_ALLOWED_ORIGINS,
+    mcpHttpBearerToken: env.MCP_HTTP_BEARER_TOKEN,
   };
 }
 
@@ -93,6 +115,20 @@ export function loadConfig(): AppConfig {
       '[elisra-mcp-ado] WARN: ADO_PAT is set but ADO_AUTH_MODE=per_request_pat. ' +
       'The server PAT will be ignored; each request must supply its own PAT.\n'
     );
+  }
+
+  if (env.MCP_TRANSPORT === 'http') {
+    if (!env.MCP_HTTP_BEARER_TOKEN) {
+      throw new Error(
+        'Configuration error: MCP_TRANSPORT=http requires MCP_HTTP_BEARER_TOKEN to be set.'
+      );
+    }
+    if (env.ADO_AUTH_MODE !== 'server_pat') {
+      throw new Error(
+        'Configuration error: MCP_TRANSPORT=http requires ADO_AUTH_MODE=server_pat. ' +
+        'Per-request PAT is not supported over native MCP HTTP transport.'
+      );
+    }
   }
 
   return mapToConfig(env);

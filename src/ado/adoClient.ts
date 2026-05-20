@@ -211,7 +211,7 @@ export class AdoClient {
             const fakeErr = new AxiosError(
               `Request failed with status ${status}`,
               String(status),
-              undefined,
+              { url: options.url, method: options.method, params } as never,
               undefined,
               response as AxiosResponse
             );

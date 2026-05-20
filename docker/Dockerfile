@@ -42,10 +42,10 @@ RUN chown -R mcp:mcp /app
 
 USER mcp
 
-# MCP servers communicate over stdio — no port to expose.
-# For HTTP-based inspection, run mcpo as a sidecar (see docker-compose.yml).
+EXPOSE 3000
 
 # Health check: config loads cleanly → exit 0
+# In HTTP mode, /healthz is also available on port 3000 (no auth required).
 HEALTHCHECK --interval=60s --timeout=10s --start-period=5s --retries=2 \
   CMD node dist/health.js
 

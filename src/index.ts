@@ -1,6 +1,7 @@
 import { loadConfig } from './config/env.js';
 import { createLogger } from './logging/logger.js';
 import { createStdioServer } from './mcp/stdioServer.js';
+import { createHttpServer } from './mcp/httpServer.js';
 
 // Bootstrap logger (before config is fully loaded — no redaction env available yet)
 const boot = createLogger({ logLevel: 'info', adoEnableDebugOutput: false });
@@ -17,9 +18,13 @@ async function main(): Promise<void> {
   const logger = createLogger(config);
 
   try {
-    await createStdioServer(config, logger);
+    if (config.mcpTransport === 'http') {
+      await createHttpServer(config, logger);
+    } else {
+      await createStdioServer(config, logger);
+    }
   } catch (err) {
-    logger.error({ err }, 'Failed to start MCP stdio server');
+    logger.error({ err }, 'Failed to start MCP server');
     process.exit(1);
   }
 }
