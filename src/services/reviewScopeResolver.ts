@@ -62,12 +62,17 @@ export class ReviewScopeResolver {
 
     const result = await this.wiqlClient.execute({ project, wiql, auth });
 
+    const warnings: string[] = [];
+    if (result.wiqlMaybeTruncated) {
+      warnings.push('WIQL result may be truncated: ADO server returned exactly 20000 ids (hard ceiling). Scope may contain more items.');
+    }
+
     const resolution: ScopeResolution = {
       project,
       sourceType: 'wiql',
       ids: result.ids,
       totalMatched: result.totalMatched,
-      warnings: [],
+      warnings,
     };
 
     if (this.config.adoEnableDebugOutput) {
@@ -140,6 +145,10 @@ export class ReviewScopeResolver {
 
     const result = await this.wiqlClient.execute({ project, wiql, auth });
 
+    if (result.wiqlMaybeTruncated) {
+      warnings.push('WIQL result may be truncated: ADO server returned exactly 20000 ids (hard ceiling). Scope may contain more items.');
+    }
+
     const resolution: ScopeResolution = {
       project,
       sourceType: 'fieldFilters',
@@ -187,12 +196,17 @@ export class ReviewScopeResolver {
 
     const result = await this.wiqlClient.execute({ project, wiql: queryDef.wiql, auth });
 
+    const warnings: string[] = [];
+    if (result.wiqlMaybeTruncated) {
+      warnings.push('WIQL result may be truncated: ADO server returned exactly 20000 ids (hard ceiling). Scope may contain more items.');
+    }
+
     const resolution: ScopeResolution = {
       project,
       sourceType: 'savedQuery',
       ids: result.ids,
       totalMatched: result.totalMatched,
-      warnings: [],
+      warnings,
     };
 
     if (this.config.adoEnableDebugOutput) {
@@ -227,6 +241,10 @@ export class ReviewScopeResolver {
     this.logger.debug({ project, sourceType: 'linkQuery', mode: source.mode }, 'Resolving linkQuery scope');
 
     const result = await this.wiqlClient.execute({ project, wiql, auth });
+
+    if (result.wiqlMaybeTruncated) {
+      warnings.push('WIQL result may be truncated: ADO server returned exactly 20000 ids (hard ceiling). Scope may contain more items.');
+    }
 
     const side = source.resultSide ?? 'source';
     const ids =

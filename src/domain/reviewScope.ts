@@ -79,8 +79,6 @@ export interface ReviewScope {
 
 // ─── Resolution result ────────────────────────────────────────────────────────
 
-export type ResponseMode = 'overview' | 'ids' | 'samples' | 'full' | 'export';
-
 export interface ScopeResolution {
   project?: string;
   sourceType: ReviewSourceType;

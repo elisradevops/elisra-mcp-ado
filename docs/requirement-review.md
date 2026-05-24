@@ -11,7 +11,7 @@
 | `ado_review_work_items` | Generic entry point. Accepts any scope source and any work item type. |
 | `ado_review_requirements` | Preset wrapper. Sets `preset: "requirement_quality"` in the response envelope. Tip: combine with a `fieldFilters` source scoped to `System.WorkItemType IN ["Requirement", "Feature"]`. |
 
-Both tools share identical parameters (`source`, `responseMode`, `sampleSize`, `maxItems`) and produce the same `ReviewFinding[]` shape.
+Both tools share identical parameters (`source`, `cursor`, `pageSize`) and produce the same `ReviewFinding[]` shape.
 
 ---
 
@@ -19,11 +19,12 @@ Both tools share identical parameters (`source`, `responseMode`, `sampleSize`, `
 
 | Mode | What is returned |
 |---|---|
-| `overview` (default) | Risk distribution summary (`byRisk`, `byAttribute` counts) + up to 5 `sampleHighRiskIds` for immediate drill-down. No per-item findings in the payload. |
-| `samples` | Summary + first `sampleSize` findings (default 10, max 50). Use after `overview` to inspect representative items. |
-| `full` | Summary + all findings. Guarded by `ADO_FULL_RESPONSE_MAX_ITEMS` (default 50). Returns an error if resolved item count exceeds the cap — narrow the scope or raise the cap. |
+| `overview` | Risk distribution summary (`byRisk`, `byAttribute` counts) + up to 10 `incompletePreviewIds_doNotUseForAnalysis`. No per-item findings in the payload. |
+| `page` (default) | One page of findings (default 50 items). Iterate via `cursor` until `pageInfo.isComplete=true`. |
 
-The `overview` `sampleHighRiskIds` array contains IDs of items whose `overallRisk` is `"high"`. Pass them directly into `ado_build_requirement_context_packet` for deep-dive context analysis.
+Tools return `_instruction` in every response instructing the model not to reason about items it has not yet received. Loop on `pageInfo.nextCursor` and accumulate `items[]` before drawing conclusions.
+
+The `overview` preview IDs are for orientation only — do not use them as the analysis population. Use `page` mode for all analysis work.
 
 ---
 

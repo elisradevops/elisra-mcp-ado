@@ -8,11 +8,15 @@ import { safeJsonStringify } from '../../utils/safeJson.js';
 import type { ReviewScope } from '../../domain/reviewScope.js';
 import { REVIEW_FIELDS } from '../../services/requirementReviewService.js';
 import type { AdoWorkItem } from '../../types/ado.js';
-import { checkFullModeGuard } from '../../domain/responseModes.js';
+import { buildPageInfo, ANTI_HALLUCINATION_BANNER } from '../../domain/responseModes.js';
+import { encodeCursor, decodeCursor } from '../../services/scopeSnapshotCache.js';
+import type { ScopeSnapshotCache } from '../../services/scopeSnapshotCache.js';
+import type { ReviewScopeResolver } from '../../services/reviewScopeResolver.js';
 import { FieldFilterSchema } from './scopeTools.js';
 import { FilterNodeSchema } from '../../domain/fieldFilter.js';
 import { toCompactRecord } from '../../services/workItemService.js';
 import { htmlToText } from '../../utils/htmlToText.js';
+import type { Logger } from '../../logging/logger.js';
 
 const CONTEXT_ONLY_NOTICE =
   'This tool returns Azure DevOps context only. ' +
@@ -116,6 +120,7 @@ function toContextItem(item: AdoWorkItem): Record<string, unknown> {
   const rawDesc = item.fields['System.Description'];
   if (rawDesc) {
     const plain = htmlToText(String(rawDesc));
+    rec['descriptionTruncated'] = plain.length > DESC_MAX_CHARS;
     rec['description'] = plain.length > DESC_MAX_CHARS
       ? plain.slice(0, DESC_MAX_CHARS) + '… [truncated]'
       : plain;
@@ -124,6 +129,7 @@ function toContextItem(item: AdoWorkItem): Record<string, unknown> {
   const rawAC = item.fields['Microsoft.VSTS.Common.AcceptanceCriteria'];
   if (rawAC) {
     const plain = htmlToText(String(rawAC));
+    rec['acceptanceCriteriaTruncated'] = plain.length > AC_MAX_CHARS;
     rec['acceptanceCriteria'] = plain.length > AC_MAX_CHARS ? plain.slice(0, AC_MAX_CHARS) + '… [truncated]' : plain;
   }
 
@@ -188,13 +194,77 @@ function structuralGroupByTitleTokens(items: AdoWorkItem[]): Array<{ groupKey: s
     .map(([groupKey, memberIds]) => ({ groupKey, groupBy: 'title-tokens', memberIds }));
 }
 
-const REVIEW_RESPONSE_MODES = ['overview', 'samples', 'full'] as const;
-const DEFAULT_SAMPLE_SIZE = 10;
-const DEFAULT_MAX_ITEMS = 200;
+// ─── Shared pagination helpers ─────────────────────────────────────────────────
+
+interface PaginationState {
+  allIds: number[];
+  offset: number;
+  totalMatched: number;
+  snapshotId: string;
+  resolvedProject: string | undefined;
+  resolvedSourceType: string;
+  warnings: string[];
+}
+
+type McpErrorResponse = {
+  content: [{ type: 'text'; text: string }];
+  isError: true;
+};
+
+async function resolvePaginationState(
+  cursor: string | undefined,
+  scope: ReviewScope,
+  effectivePageSize: number, // schema cap (200) is documentation; runtime clamp is the actual enforcement
+  reviewScopeResolver: ReviewScopeResolver,
+  scopeSnapshotCache: ScopeSnapshotCache,
+  logger: Logger,
+): Promise<PaginationState | McpErrorResponse> {
+  if (!cursor) {
+    const resolution = await reviewScopeResolver.resolve(scope);
+    const snapshotId = scopeSnapshotCache.put(resolution.ids, { project: resolution.project, sourceType: resolution.sourceType });
+    return {
+      allIds: resolution.ids,
+      offset: 0,
+      totalMatched: resolution.totalMatched,
+      snapshotId,
+      resolvedProject: resolution.project,
+      resolvedSourceType: resolution.sourceType,
+      warnings: resolution.warnings,
+    };
+  }
+  const decoded = decodeCursor(cursor);
+  if (decoded === null) {
+    return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'CURSOR_INVALID', message: 'Cursor is malformed. Restart pagination by calling without cursor.' }) }], isError: true };
+  }
+  const snapshot = scopeSnapshotCache.get(decoded.snapshotId);
+  if (snapshot === null) {
+    return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'CURSOR_EXPIRED', message: 'Cursor has expired or been evicted. Restart pagination by calling without cursor.' }) }], isError: true };
+  }
+  return {
+    allIds: snapshot.ids,
+    offset: decoded.offset,
+    totalMatched: snapshot.ids.length,
+    snapshotId: decoded.snapshotId,
+    resolvedProject: snapshot.meta.project,
+    resolvedSourceType: snapshot.meta.sourceType,
+    warnings: [],
+  };
+}
+
+function extractHttpErrorMeta(err: unknown): { url: unknown; status: unknown; method: unknown } {
+  const config = (err as Record<string, unknown>)?.['config'];
+  if (typeof config !== 'object' || config === null) return { url: undefined, status: undefined, method: undefined };
+  const axiosErr = err as { response?: { status?: unknown }; config: { url?: unknown; method?: unknown } };
+  return {
+    url: axiosErr.config?.url,
+    status: axiosErr.response?.status,
+    method: axiosErr.config?.method,
+  };
+}
 
 export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
   const {
-    config, logger, reviewScopeResolver, workItemService, fieldDiscoveryService,
+    config, logger, reviewScopeResolver, workItemService, fieldDiscoveryService, scopeSnapshotCache,
   } = deps;
 
   // ── ado_review_work_items ──────────────────────────────────────────────────
@@ -202,22 +272,20 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
   server.tool(
     'ado_review_work_items',
     CONTEXT_ONLY_NOTICE + ' ' +
-    'Resolves a scope, fetches work items with their fields, and returns a compact evidence packet. ' +
-    'The LLM applies its review rules (from the system prompt, Knowledge/RAG, and/or user prompt) to the returned items. ' +
-    'Always call ado_resolve_review_scope first to get totalMatched. ' +
-    `If totalMatched > ${config.adoFullResponseMaxItems}, use responseMode="samples" with sampleSize=10. ` +
-    '"full" mode is hard-rejected above the server cap (ADO_FULL_RESPONSE_MAX_ITEMS). ' +
-    '"overview" mode skips item fetching and returns ID list only — use "samples" to get full item bodies. ' +
+    'Resolves a scope, fetches ONE PAGE of work items with their fields, and returns a compact evidence packet. ' +
+    'To analyze the full scope, iterate: call the tool, read items[], if pageInfo.isComplete=false call again with cursor=pageInfo.nextCursor, accumulate items, repeat until isComplete=true. Never reason about items you have not yet received. ' +
+    'Use responseMode="overview" to get counts and ID list only without fetching item bodies. ' +
     'Set includeRelations=true to fetch traceability links — omit it (default false) if you get 404 errors on batch fetch.',
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
       source: ValidatedSourceSchema,
-      responseMode: z.enum(REVIEW_RESPONSE_MODES).optional().default('overview'),
-      sampleSize: z.number().int().positive().max(50).optional().default(DEFAULT_SAMPLE_SIZE),
-      maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS).describe(
-        `Max work items to fetch in "samples"/"full" modes. "full" capped at ADO_FULL_RESPONSE_MAX_ITEMS (${config.adoFullResponseMaxItems}).`
+      responseMode: z.enum(['overview', 'page']).optional().default('overview'),
+      cursor: z.string().optional().describe(
+        'Pagination cursor from a previous call\'s pageInfo.nextCursor. Omit for first page.'
       ),
+      pageSize: z.number().int().positive().max(200).optional()
+        .describe(`Items per page. Default ${config.adoPageSizeDefault}, max ${config.adoPageSizeMax}.`),
       includeRelations: z.boolean().optional().default(false).describe(
         'Set true to fetch relation links (traceability). Default false — avoids 404 errors on on-prem ADO Server caused by $expand=relations on batch fetch.'
       ),
@@ -231,41 +299,29 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         'Returned in fetchMetadata so the LLM knows which relation types to treat as traceability evidence.'
       ),
     },
-    async ({ pat, project, source, responseMode, sampleSize, maxItems, includeRelations, extraFields, traceabilityLinkTokens }) => {
+    async ({ pat, project, source, responseMode, cursor, pageSize, includeRelations, extraFields, traceabilityLinkTokens }) => {
       const auth = resolveAuthContext(config, pat);
       const scope: ReviewScope = { project, auth, source };
 
       try {
-        const resolution = await reviewScopeResolver.resolve(scope);
-
-        const cap = responseMode === 'overview'
-          ? 0
-          : responseMode === 'full'
-            ? Math.min(maxItems, config.adoFullResponseMaxItems)
-            : maxItems;
-
-        if (responseMode === 'full') {
-          const guard = checkFullModeGuard(resolution.ids.length, cap);
-          if (!guard.allowed) {
-            return { content: [{ type: 'text' as const, text: guard.reason! }], isError: true };
-          }
-        }
-
         const traceTokens = traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens;
 
+        // ── overview mode ────────────────────────────────────────────────────
         if (responseMode === 'overview') {
+          const resolution = await reviewScopeResolver.resolve(scope);
           logger.info({ totalMatched: resolution.totalMatched }, 'ado_review_work_items overview');
           return {
             content: [{
               type: 'text' as const,
               text: safeJsonStringify({
+                _instruction: ANTI_HALLUCINATION_BANNER,
                 scope: {
                   project: resolution.project,
                   sourceType: resolution.sourceType,
                   totalMatched: resolution.totalMatched,
                 },
                 responseMode: 'overview',
-                previewIds: resolution.ids.slice(0, 20),
+                incompletePreviewIds_doNotUseForAnalysis: resolution.ids.slice(0, 20),
                 fetchMetadata: {
                   project: resolution.project,
                   apiVersion: config.adoApiVersion,
@@ -280,61 +336,66 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
                   limit: 20,
                   returnedCount: Math.min(resolution.ids.length, 20),
                   totalKnownCount: resolution.totalMatched,
-                  reason: 'overview mode returns ID preview only — use responseMode="samples" to fetch item bodies',
+                  reason: 'overview mode returns ID preview only — use responseMode="page" to fetch item bodies',
                 },
                 missingData: [
-                  { type: 'item_bodies', reason: 'not_requested', details: 'Use responseMode="samples" or "full" to fetch work item fields and descriptions.' },
-                  { type: 'relations', reason: 'not_requested', details: 'Use responseMode="samples" to fetch relation links.' },
+                  { type: 'item_bodies', reason: 'not_requested', details: 'Use responseMode="page" to fetch work item fields and descriptions.' },
+                  { type: 'relations', reason: 'not_requested', details: 'Use responseMode="page" with includeRelations=true to fetch relation links.' },
                 ],
               }, 2),
             }],
           };
         }
 
-        const ids = resolution.ids.slice(0, cap);
+        // ── page mode ────────────────────────────────────────────────────────
+        const effectivePageSize = Math.min(pageSize ?? config.adoPageSizeDefault, config.adoPageSizeMax);
+        const paginationResult = await resolvePaginationState(cursor, scope, effectivePageSize, reviewScopeResolver, scopeSnapshotCache, logger);
+        if ('isError' in paginationResult) return paginationResult;
+        const { allIds, offset, totalMatched, snapshotId, resolvedProject, resolvedSourceType, warnings: scopeWarnings } = paginationResult;
+
+        const pageIds = allIds.slice(offset, offset + effectivePageSize);
         const extras = [...config.adoReviewExtraFields, ...(extraFields ?? [])];
         const { fields: reviewFields, dropped, discoveryError } =
           await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
 
-        const items = await workItemService.fetchMany(ids, auth, {
+        const items = await workItemService.fetchMany(pageIds, auth, {
           fields: reviewFields,
           expand: includeRelations ? 'relations' : undefined,
-        }, resolution.project);
+        }, resolvedProject);
 
-        const sampledItems = responseMode === 'samples' ? items.slice(0, sampleSize) : items;
+        const nextOffset = offset + effectivePageSize;
+        const nextCursor = nextOffset < allIds.length
+          ? encodeCursor(snapshotId, nextOffset)
+          : null;
 
         const allWarnings: string[] = [
-          ...resolution.warnings,
+          ...scopeWarnings,
           ...(dropped.length ? [`Fields not found in collection and dropped: ${dropped.join(', ')}`] : []),
           ...(discoveryError ? [`Field discovery unavailable: ${discoveryError}`] : []),
         ];
 
-        logger.info({ totalMatched: resolution.totalMatched, fetched: items.length, returned: sampledItems.length, responseMode }, 'ado_review_work_items context');
+        logger.info({ totalMatched, fetched: items.length, offset, effectivePageSize }, 'ado_review_work_items page');
         return {
           content: [{
             type: 'text' as const,
             text: safeJsonStringify({
+              _instruction: ANTI_HALLUCINATION_BANNER,
               scope: {
-                project: resolution.project,
-                sourceType: resolution.sourceType,
-                totalMatched: resolution.totalMatched,
+                project: resolvedProject,
+                sourceType: resolvedSourceType,
+                totalMatched,
               },
-              responseMode,
-              items: sampledItems.map(toContextItem),
+              pageInfo: buildPageInfo(totalMatched, offset, effectivePageSize, items.length, nextCursor),
+              responseMode: 'page',
+              items: items.map(toContextItem),
               fetchMetadata: {
-                project: resolution.project,
+                project: resolvedProject,
                 apiVersion: config.adoApiVersion,
                 fetchedAt: new Date().toISOString(),
                 toolName: 'ado_review_work_items',
-                itemCount: sampledItems.length,
+                itemCount: items.length,
                 traceabilityLinkTokens: traceTokens,
                 warnings: allWarnings,
-              },
-              truncation: {
-                wasTruncated: resolution.ids.length > ids.length || items.length > sampledItems.length,
-                limit: responseMode === 'samples' ? sampleSize : cap,
-                returnedCount: sampledItems.length,
-                totalKnownCount: resolution.totalMatched,
               },
               missingData: includeRelations ? [] : [
                 { type: 'relations', reason: 'not_requested', details: 'Set includeRelations=true to fetch traceability relation links.' },
@@ -343,9 +404,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           }],
         };
       } catch (err) {
-        const url = (err as Record<string, unknown>)?.['config'] && ((err as Record<string, unknown>)['config'] as Record<string, unknown>)?.['url'];
-        const status = (err as Record<string, unknown>)?.['response'] && ((err as Record<string, unknown>)['response'] as Record<string, unknown>)?.['status'];
-        const method = (err as Record<string, unknown>)?.['config'] && ((err as Record<string, unknown>)['config'] as Record<string, unknown>)?.['method'];
+        const { url, status, method } = extractHttpErrorMeta(err);
         const message = err instanceof Error ? err.message : String(err);
         logger.warn({ err, url, status, method: typeof method === 'string' ? method.toUpperCase() : method, responseMode, sourceType: source.type }, 'ado_review_work_items failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
@@ -358,22 +417,21 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
   server.tool(
     'ado_review_requirements',
     CONTEXT_ONLY_NOTICE + ' ' +
-    'Resolves a scope, fetches requirement work items with their fields and relations, and returns a compact context packet. ' +
+    'Resolves a scope, fetches ONE PAGE of requirement work items with their fields and relations, and returns a compact context packet. ' +
     'Tip: add a fieldFilters source with System.WorkItemType IN ["Requirement","Feature"] to scope to requirement types. ' +
-    'The LLM applies its requirement review rules (from the system prompt, Knowledge/RAG, and/or user prompt) to the returned items. ' +
-    'Always call ado_resolve_review_scope first to get totalMatched. ' +
-    `If totalMatched > ${config.adoFullResponseMaxItems}, use responseMode="samples" with sampleSize=10. ` +
-    '"full" mode is hard-rejected above the server cap (ADO_FULL_RESPONSE_MAX_ITEMS). ' +
-    '"overview" returns ID list only — use "samples" for full item bodies with relations.',
+    'To analyze the full scope, iterate: call the tool, read items[], if pageInfo.isComplete=false call again with cursor=pageInfo.nextCursor, accumulate items, repeat until isComplete=true. Never reason about items you have not yet received. ' +
+    'Use responseMode="overview" to get counts and ID list only without fetching item bodies. ' +
+    'The LLM applies its requirement review rules (from the system prompt, Knowledge/RAG, and/or user prompt) to the returned items.',
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
       source: ValidatedSourceSchema,
-      responseMode: z.enum(REVIEW_RESPONSE_MODES).optional().default('overview'),
-      sampleSize: z.number().int().positive().max(50).optional().default(DEFAULT_SAMPLE_SIZE),
-      maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS).describe(
-        `Max items returned in "samples"/"full" modes. "full" is capped at ADO_FULL_RESPONSE_MAX_ITEMS (currently ${config.adoFullResponseMaxItems}).`
+      responseMode: z.enum(['overview', 'page']).optional().default('overview'),
+      cursor: z.string().optional().describe(
+        'Pagination cursor from a previous call\'s pageInfo.nextCursor. Omit for first page.'
       ),
+      pageSize: z.number().int().positive().max(200).optional()
+        .describe(`Items per page. Default ${config.adoPageSizeDefault}, max ${config.adoPageSizeMax}.`),
       includeRelations: z.boolean().optional().default(false).describe(
         'Set true to fetch relation links (traceability). Default false — avoids 404 errors on on-prem ADO Server caused by $expand=relations on batch fetch.'
       ),
@@ -387,41 +445,29 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         'Returned in fetchMetadata so the LLM knows which relation types to treat as traceability evidence.'
       ),
     },
-    async ({ pat, project, source, responseMode, sampleSize, maxItems, includeRelations, extraFields, traceabilityLinkTokens }) => {
+    async ({ pat, project, source, responseMode, cursor, pageSize, includeRelations, extraFields, traceabilityLinkTokens }) => {
       const auth = resolveAuthContext(config, pat);
       const scope: ReviewScope = { project, auth, source, preset: 'requirement_quality' };
 
       try {
-        const resolution = await reviewScopeResolver.resolve(scope);
-
-        const cap = responseMode === 'overview'
-          ? 0
-          : responseMode === 'full'
-            ? Math.min(maxItems, config.adoFullResponseMaxItems)
-            : maxItems;
-
-        if (responseMode === 'full') {
-          const guard = checkFullModeGuard(resolution.ids.length, cap);
-          if (!guard.allowed) {
-            return { content: [{ type: 'text' as const, text: guard.reason! }], isError: true };
-          }
-        }
-
         const traceTokens = traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens;
 
+        // ── overview mode ────────────────────────────────────────────────────
         if (responseMode === 'overview') {
+          const resolution = await reviewScopeResolver.resolve(scope);
           logger.info({ totalMatched: resolution.totalMatched }, 'ado_review_requirements overview');
           return {
             content: [{
               type: 'text' as const,
               text: safeJsonStringify({
+                _instruction: ANTI_HALLUCINATION_BANNER,
                 scope: {
                   project: resolution.project,
                   sourceType: resolution.sourceType,
                   totalMatched: resolution.totalMatched,
                 },
                 responseMode: 'overview',
-                previewIds: resolution.ids.slice(0, 20),
+                incompletePreviewIds_doNotUseForAnalysis: resolution.ids.slice(0, 20),
                 fetchMetadata: {
                   project: resolution.project,
                   apiVersion: config.adoApiVersion,
@@ -436,61 +482,66 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
                   limit: 20,
                   returnedCount: Math.min(resolution.ids.length, 20),
                   totalKnownCount: resolution.totalMatched,
-                  reason: 'overview mode returns ID preview only — use responseMode="samples" to fetch item bodies',
+                  reason: 'overview mode returns ID preview only — use responseMode="page" to fetch item bodies',
                 },
                 missingData: [
-                  { type: 'item_bodies', reason: 'not_requested', details: 'Use responseMode="samples" or "full" to fetch work item fields and descriptions.' },
-                  { type: 'relations', reason: 'not_requested', details: 'Use responseMode="samples" to fetch relation links.' },
+                  { type: 'item_bodies', reason: 'not_requested', details: 'Use responseMode="page" to fetch work item fields and descriptions.' },
+                  { type: 'relations', reason: 'not_requested', details: 'Use responseMode="page" with includeRelations=true to fetch relation links.' },
                 ],
               }, 2),
             }],
           };
         }
 
-        const ids = resolution.ids.slice(0, cap);
+        // ── page mode ────────────────────────────────────────────────────────
+        const effectivePageSize = Math.min(pageSize ?? config.adoPageSizeDefault, config.adoPageSizeMax);
+        const paginationResult = await resolvePaginationState(cursor, scope, effectivePageSize, reviewScopeResolver, scopeSnapshotCache, logger);
+        if ('isError' in paginationResult) return paginationResult;
+        const { allIds, offset, totalMatched, snapshotId, resolvedProject, resolvedSourceType, warnings: scopeWarnings } = paginationResult;
+
+        const pageIds = allIds.slice(offset, offset + effectivePageSize);
         const extras = [...config.adoReviewExtraFields, ...(extraFields ?? [])];
         const { fields: reviewFields, dropped, discoveryError } =
           await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
 
-        const items = await workItemService.fetchMany(ids, auth, {
+        const items = await workItemService.fetchMany(pageIds, auth, {
           fields: reviewFields,
           expand: includeRelations ? 'relations' : undefined,
-        }, resolution.project);
+        }, resolvedProject);
 
-        const sampledItems = responseMode === 'samples' ? items.slice(0, sampleSize) : items;
+        const nextOffset = offset + effectivePageSize;
+        const nextCursor = nextOffset < allIds.length
+          ? encodeCursor(snapshotId, nextOffset)
+          : null;
 
         const allWarnings: string[] = [
-          ...resolution.warnings,
+          ...scopeWarnings,
           ...(dropped.length ? [`Fields not found in collection and dropped: ${dropped.join(', ')}`] : []),
           ...(discoveryError ? [`Field discovery unavailable: ${discoveryError}`] : []),
         ];
 
-        logger.info({ totalMatched: resolution.totalMatched, fetched: items.length, returned: sampledItems.length, responseMode }, 'ado_review_requirements context');
+        logger.info({ totalMatched, fetched: items.length, offset, effectivePageSize }, 'ado_review_requirements page');
         return {
           content: [{
             type: 'text' as const,
             text: safeJsonStringify({
+              _instruction: ANTI_HALLUCINATION_BANNER,
               scope: {
-                project: resolution.project,
-                sourceType: resolution.sourceType,
-                totalMatched: resolution.totalMatched,
+                project: resolvedProject,
+                sourceType: resolvedSourceType,
+                totalMatched,
               },
-              responseMode,
-              items: sampledItems.map(toContextItem),
+              pageInfo: buildPageInfo(totalMatched, offset, effectivePageSize, items.length, nextCursor),
+              responseMode: 'page',
+              items: items.map(toContextItem),
               fetchMetadata: {
-                project: resolution.project,
+                project: resolvedProject,
                 apiVersion: config.adoApiVersion,
                 fetchedAt: new Date().toISOString(),
                 toolName: 'ado_review_requirements',
-                itemCount: sampledItems.length,
+                itemCount: items.length,
                 traceabilityLinkTokens: traceTokens,
                 warnings: allWarnings,
-              },
-              truncation: {
-                wasTruncated: resolution.ids.length > ids.length || items.length > sampledItems.length,
-                limit: responseMode === 'samples' ? sampleSize : cap,
-                returnedCount: sampledItems.length,
-                totalKnownCount: resolution.totalMatched,
               },
               missingData: includeRelations ? [] : [
                 { type: 'relations', reason: 'not_requested', details: 'Set includeRelations=true to fetch traceability relation links.' },
@@ -499,9 +550,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           }],
         };
       } catch (err) {
-        const url = (err as Record<string, unknown>)?.['config'] && ((err as Record<string, unknown>)['config'] as Record<string, unknown>)?.['url'];
-        const status = (err as Record<string, unknown>)?.['response'] && ((err as Record<string, unknown>)['response'] as Record<string, unknown>)?.['status'];
-        const method = (err as Record<string, unknown>)?.['config'] && ((err as Record<string, unknown>)['config'] as Record<string, unknown>)?.['method'];
+        const { url, status, method } = extractHttpErrorMeta(err);
         const message = err instanceof Error ? err.message : String(err);
         logger.warn({ err, url, status, method: typeof method === 'string' ? method.toUpperCase() : method, responseMode, sourceType: source.type }, 'ado_review_requirements failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
@@ -514,8 +563,9 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
   server.tool(
     'ado_find_requirement_completeness_gaps',
     CONTEXT_ONLY_NOTICE + ' ' +
-    'Fetches work items and, when contextMode=L3, groups them by groupField to build a peer-group ID map. ' +
+    'Fetches ONE PAGE of work items and, when contextMode=L3, groups them by groupField to build a peer-group ID map. ' +
     'Returns the raw items plus structural peer-group membership so the LLM can identify completeness patterns itself. ' +
+    'To analyze the full scope, iterate: call the tool, read items[], if pageInfo.isComplete=false call again with cursor=pageInfo.nextCursor, accumulate items, repeat until isComplete=true. Never reason about items you have not yet received. ' +
     'The LLM must apply completeness rules (from the system prompt, Knowledge/RAG, and/or user prompt) to the returned context. ' +
     'L1: single-item field presence. L2: traceability links (requires relations). L3: peer-field comparison (requires groupField).',
     {
@@ -528,9 +578,11 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       groupField: z.string().optional().describe(
         'Field to group items for L3 peer analysis (e.g. System.AreaPath, Custom.SubSystem). Required for L3.'
       ),
-      maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS).describe(
-        'Max items to fetch. Default 200. Server cap: ADO_MAX_REVIEW_ITEMS (default 500).'
+      cursor: z.string().optional().describe(
+        'Pagination cursor from a previous call\'s pageInfo.nextCursor. Omit for first page.'
       ),
+      pageSize: z.number().int().positive().max(200).optional()
+        .describe(`Items per page. Default ${config.adoPageSizeDefault}, max ${config.adoPageSizeMax}.`),
       extraFields: z.array(z.string()).optional().describe(
         'Additional field reference names to fetch (e.g. Custom.SPAWBS, Custom.SubModule). ' +
         'Merged with built-in context fields. Refs not present in the collection are dropped and reported in fetchMetadata.warnings.'
@@ -539,14 +591,19 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         'Substring tokens used to recognize traceability links. Returned in fetchMetadata so the LLM knows which relation types to treat as traceability evidence.'
       ),
     },
-    async ({ pat, project, source, contextMode, groupField, maxItems, extraFields, traceabilityLinkTokens }) => {
+    async ({ pat, project, source, contextMode, groupField, cursor, pageSize, extraFields, traceabilityLinkTokens }) => {
       const auth = resolveAuthContext(config, pat);
       const scope: ReviewScope = { project, auth, source };
 
       try {
-        const resolution = await reviewScopeResolver.resolve(scope);
-        const ids = resolution.ids.slice(0, Math.min(maxItems, config.adoMaxReviewItems));
+        const effectivePageSize = Math.min(pageSize ?? config.adoPageSizeDefault, config.adoPageSizeMax);
         const needsRelations = contextMode === 'L2' || contextMode === 'L3';
+
+        const paginationResult = await resolvePaginationState(cursor, scope, effectivePageSize, reviewScopeResolver, scopeSnapshotCache, logger);
+        if ('isError' in paginationResult) return paginationResult;
+        const { allIds, offset, totalMatched, snapshotId, resolvedProject, resolvedSourceType, warnings: scopeWarnings } = paginationResult;
+
+        const pageIds = allIds.slice(offset, offset + effectivePageSize);
 
         const extras = [
           ...config.adoReviewExtraFields,
@@ -556,10 +613,10 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         const { fields: reviewFields, dropped, discoveryError } =
           await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
 
-        const items = await workItemService.fetchMany(ids, auth, {
+        const items = await workItemService.fetchMany(pageIds, auth, {
           fields: reviewFields,
           expand: needsRelations ? 'relations' : undefined,
-        }, resolution.project);
+        }, resolvedProject);
 
         // Build peer-group ID map for L3 — structural only, no gap analysis
         let peerGroupIds: Record<number, number[]> | undefined;
@@ -580,9 +637,14 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           }
         }
 
+        const nextOffset = offset + effectivePageSize;
+        const nextCursor = nextOffset < allIds.length
+          ? encodeCursor(snapshotId, nextOffset)
+          : null;
+
         const traceTokens = traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens;
         const allWarnings: string[] = [
-          ...resolution.warnings,
+          ...scopeWarnings,
           ...(dropped.length ? [`Fields not found in collection and dropped: ${dropped.join(', ')}`] : []),
           ...(discoveryError ? [`Field discovery unavailable: ${discoveryError}`] : []),
           ...(contextMode === 'L3' && !groupField ? ['contextMode=L3 requires groupField — peer groups not built.'] : []),
@@ -596,22 +658,24 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           missingData.push({ type: 'peerGroupIds', reason: 'not_requested', details: 'Provide groupField to enable L3 peer-group context.' });
         }
 
-        logger.info({ totalMatched: resolution.totalMatched, fetched: items.length, contextMode }, 'ado_find_requirement_completeness_gaps context');
+        logger.info({ totalMatched, fetched: items.length, offset, effectivePageSize, contextMode }, 'ado_find_requirement_completeness_gaps page');
 
         return {
           content: [{
             type: 'text' as const,
             text: safeJsonStringify({
+              _instruction: ANTI_HALLUCINATION_BANNER,
               scope: {
-                project: resolution.project,
-                sourceType: resolution.sourceType,
-                totalMatched: resolution.totalMatched,
+                project: resolvedProject,
+                sourceType: resolvedSourceType,
+                totalMatched,
               },
+              pageInfo: buildPageInfo(totalMatched, offset, effectivePageSize, items.length, nextCursor),
               contextMode,
               items: items.map(toContextItem),
               ...(peerGroupIds !== undefined ? { peerGroupIds } : {}),
               fetchMetadata: {
-                project: resolution.project,
+                project: resolvedProject,
                 apiVersion: config.adoApiVersion,
                 fetchedAt: new Date().toISOString(),
                 toolName: 'ado_find_requirement_completeness_gaps',
@@ -619,20 +683,12 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
                 traceabilityLinkTokens: traceTokens,
                 warnings: allWarnings,
               },
-              truncation: {
-                wasTruncated: resolution.ids.length > ids.length,
-                limit: Math.min(maxItems, config.adoMaxReviewItems),
-                returnedCount: items.length,
-                totalKnownCount: resolution.totalMatched,
-              },
               missingData,
             }, 2),
           }],
         };
       } catch (err) {
-        const url = (err as Record<string, unknown>)?.['config'] && ((err as Record<string, unknown>)['config'] as Record<string, unknown>)?.['url'];
-        const status = (err as Record<string, unknown>)?.['response'] && ((err as Record<string, unknown>)['response'] as Record<string, unknown>)?.['status'];
-        const method = (err as Record<string, unknown>)?.['config'] && ((err as Record<string, unknown>)['config'] as Record<string, unknown>)?.['method'];
+        const { url, status, method } = extractHttpErrorMeta(err);
         const message = err instanceof Error ? err.message : String(err);
         logger.warn({ err, url, status, method: typeof method === 'string' ? method.toUpperCase() : method }, 'ado_find_requirement_completeness_gaps failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
@@ -645,10 +701,11 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
   server.tool(
     'ado_find_requirement_consistency_candidates',
     CONTEXT_ONLY_NOTICE + ' ' +
-    'Fetches work items and groups them structurally (by parent, field value, or shared title tokens). ' +
+    'Fetches ONE PAGE of work items and groups them structurally (by parent, field value, or shared title tokens). ' +
     'Returns the raw items plus group membership so the LLM can compare pairs and identify conflicts itself. ' +
+    'To analyze the full scope, iterate: call the tool, read items[], if pageInfo.isComplete=false call again with cursor=pageInfo.nextCursor, accumulate items, repeat until isComplete=true. Never reason about items you have not yet received. ' +
     'The LLM must apply consistency rules (from the system prompt, Knowledge/RAG, and/or user prompt) to the returned context. ' +
-    'Groups with only 1 member are excluded. Groups exceeding maxGroupSize are flagged in truncation.',
+    'Groups with only 1 member are excluded. Groups exceeding maxGroupSize are flagged in warnings.',
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
@@ -661,23 +718,30 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         'Field reference name for grouping when comparisonMode="field" (e.g. Custom.SubSystem).'
       ),
       maxGroupSize: z.number().int().min(2).max(100).optional().default(25).describe(
-        'Groups larger than this are flagged in truncation metadata. Default 25.'
+        'Groups larger than this are flagged in warnings metadata. Default 25.'
       ),
-      maxItems: z.number().int().positive().optional().default(DEFAULT_MAX_ITEMS).describe(
-        'Max items to fetch. Default 200. Server cap: ADO_MAX_REVIEW_ITEMS (default 500).'
+      cursor: z.string().optional().describe(
+        'Pagination cursor from a previous call\'s pageInfo.nextCursor. Omit for first page.'
       ),
+      pageSize: z.number().int().positive().max(200).optional()
+        .describe(`Items per page. Default ${config.adoPageSizeDefault}, max ${config.adoPageSizeMax}.`),
       extraFields: z.array(z.string()).optional().describe(
         'Additional field reference names to fetch (e.g. Custom.SPAWBS, Custom.SubModule). ' +
         'Merged with built-in context fields. Refs not present in the collection are dropped and reported in fetchMetadata.warnings.'
       ),
     },
-    async ({ pat, project, source, comparisonMode, comparisonField, maxGroupSize, maxItems, extraFields }) => {
+    async ({ pat, project, source, comparisonMode, comparisonField, maxGroupSize, cursor, pageSize, extraFields }) => {
       const auth = resolveAuthContext(config, pat);
       const scope: ReviewScope = { project, auth, source };
 
       try {
-        const resolution = await reviewScopeResolver.resolve(scope);
-        const ids = resolution.ids.slice(0, Math.min(maxItems, config.adoMaxReviewItems));
+        const effectivePageSize = Math.min(pageSize ?? config.adoPageSizeDefault, config.adoPageSizeMax);
+
+        const paginationResult = await resolvePaginationState(cursor, scope, effectivePageSize, reviewScopeResolver, scopeSnapshotCache, logger);
+        if ('isError' in paginationResult) return paginationResult;
+        const { allIds, offset, totalMatched, snapshotId, resolvedProject, resolvedSourceType, warnings: scopeWarnings } = paginationResult;
+
+        const pageIds = allIds.slice(offset, offset + effectivePageSize);
 
         const extras = [
           ...config.adoReviewExtraFields,
@@ -687,10 +751,10 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         const { fields: reviewFields, dropped, discoveryError } =
           await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
 
-        const items = await workItemService.fetchMany(ids, auth, {
+        const items = await workItemService.fetchMany(pageIds, auth, {
           fields: reviewFields,
           expand: comparisonMode === 'parent' ? 'relations' : undefined,
-        }, resolution.project);
+        }, resolvedProject);
 
         // Build structural groups — no pair comparison, no analysis
         let rawGroups: Array<{ groupKey: string; groupBy: string; memberIds: number[] }>;
@@ -708,41 +772,41 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         const oversizedGroups = rawGroups.filter((g) => g.memberIds.length > maxGroupSize);
         const groups = rawGroups.filter((g) => g.memberIds.length <= maxGroupSize);
 
+        const nextOffset = offset + effectivePageSize;
+        const nextCursor = nextOffset < allIds.length
+          ? encodeCursor(snapshotId, nextOffset)
+          : null;
+
         const allWarnings: string[] = [
-          ...resolution.warnings,
+          ...scopeWarnings,
           ...(dropped.length ? [`Fields not found in collection and dropped: ${dropped.join(', ')}`] : []),
           ...(discoveryError ? [`Field discovery unavailable: ${discoveryError}`] : []),
           ...(oversizedGroups.length ? [`${oversizedGroups.length} group(s) exceeded maxGroupSize (${maxGroupSize}) and are excluded from the groups list.`] : []),
         ];
 
-        logger.info({ totalMatched: resolution.totalMatched, fetched: items.length, groups: groups.length, oversized: oversizedGroups.length, comparisonMode }, 'ado_find_requirement_consistency_candidates context');
+        logger.info({ totalMatched, fetched: items.length, offset, effectivePageSize, groups: groups.length, oversized: oversizedGroups.length, comparisonMode }, 'ado_find_requirement_consistency_candidates page');
 
         return {
           content: [{
             type: 'text' as const,
             text: safeJsonStringify({
+              _instruction: ANTI_HALLUCINATION_BANNER,
               scope: {
-                project: resolution.project,
-                sourceType: resolution.sourceType,
-                totalMatched: resolution.totalMatched,
+                project: resolvedProject,
+                sourceType: resolvedSourceType,
+                totalMatched,
               },
+              pageInfo: buildPageInfo(totalMatched, offset, effectivePageSize, items.length, nextCursor),
               comparisonMode,
               groups,
               items: items.map(toContextItem),
               fetchMetadata: {
-                project: resolution.project,
+                project: resolvedProject,
                 apiVersion: config.adoApiVersion,
                 fetchedAt: new Date().toISOString(),
                 toolName: 'ado_find_requirement_consistency_candidates',
                 itemCount: items.length,
                 warnings: allWarnings,
-              },
-              truncation: {
-                wasTruncated: resolution.ids.length > ids.length || oversizedGroups.length > 0,
-                limit: Math.min(maxItems, config.adoMaxReviewItems),
-                returnedCount: items.length,
-                totalKnownCount: resolution.totalMatched,
-                reason: oversizedGroups.length > 0 ? `${oversizedGroups.length} group(s) exceeded maxGroupSize=${maxGroupSize} — LLM should review these groups manually or narrow scope` : undefined,
               },
               missingData: oversizedGroups.length > 0 ? [
                 {
@@ -755,9 +819,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           }],
         };
       } catch (err) {
-        const url = (err as Record<string, unknown>)?.['config'] && ((err as Record<string, unknown>)['config'] as Record<string, unknown>)?.['url'];
-        const status = (err as Record<string, unknown>)?.['response'] && ((err as Record<string, unknown>)['response'] as Record<string, unknown>)?.['status'];
-        const method = (err as Record<string, unknown>)?.['config'] && ((err as Record<string, unknown>)['config'] as Record<string, unknown>)?.['method'];
+        const { url, status, method } = extractHttpErrorMeta(err);
         const message = err instanceof Error ? err.message : String(err);
         logger.warn({ err, url, status, method: typeof method === 'string' ? method.toUpperCase() : method }, 'ado_find_requirement_consistency_candidates failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };

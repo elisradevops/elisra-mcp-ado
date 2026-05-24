@@ -118,6 +118,65 @@ Call ado_discover_fields with project="YourProject"
 
 Returns the field catalog for the project. Confirms field metadata access.
 
+## Pagination Protocol
+
+All review tools return **one page** of results per call. The model must iterate until `pageInfo.isComplete=true`.
+
+### Overview / first call
+
+Call any review tool **without** a `cursor` to get the first page:
+
+```json
+{
+  "source": { "type": "fieldFilters", "filters": [...] },
+  "pageSize": 50
+}
+```
+
+Response includes:
+```json
+{
+  "_instruction": "Use ONLY the work items in items[] for analysis...",
+  "pageInfo": {
+    "totalMatched": 312,
+    "offset": 0,
+    "pageSize": 50,
+    "returnedCount": 50,
+    "nextCursor": "eyJzIjoiNGI3....",
+    "isComplete": false
+  },
+  "items": [...]
+}
+```
+
+### Subsequent pages
+
+Pass the `nextCursor` value back to get the next page:
+
+```json
+{
+  "source": { "type": "fieldFilters", "filters": [...] },
+  "cursor": "eyJzIjoiNGI3....",
+  "pageSize": 50
+}
+```
+
+Repeat until `pageInfo.isComplete=true`. Accumulate `items[]` locally across all pages before drawing conclusions.
+
+**Never invent or infer items that have not yet been returned.**
+
+### Cursor expiry
+
+Cursors are valid for 10 minutes (configurable via `ADO_SCOPE_CACHE_TTL_MS`). If a `CURSOR_EXPIRED` error is returned, restart pagination from page 1 (call without `cursor`).
+
+### Scale constraint
+
+The snapshot cache is in-process memory. Do not horizontally scale the MCP server without sticky sessions or an external cache (e.g. Redis). Single-replica Kubernetes deployments are unaffected.
+
+### Migration from responseMode="samples" / "full"
+
+The old `responseMode`, `sampleSize`, and `maxItems` parameters have been removed. Replace with `pageSize` and iterate via `cursor`. The old parameters were designed to return partial results for LLM analysis, which caused the model to invent missing items — the cursor-paginated approach eliminates that failure mode.
+
 ## Operator Reference
 
 ### Required environment variables (HTTP mode)
@@ -139,6 +198,10 @@ Returns the field catalog for the project. Confirms field metadata access.
 | `ADO_API_VERSION` | `7.0` | ADO REST API version (TFS 2018 → `4.1`) |
 | `NODE_EXTRA_CA_CERTS` | *(unset)* | Path to corporate CA PEM inside container |
 | `LOG_LEVEL` | `info` | Log verbosity |
+| `ADO_PAGE_SIZE_DEFAULT` | `50` | Default items per page for cursor-paginated review tools |
+| `ADO_PAGE_SIZE_MAX` | `200` | Maximum items per page (ADO batch ceiling) |
+| `ADO_SCOPE_CACHE_TTL_MS` | `600000` | Cursor lifetime in milliseconds (10 min). Expired cursors return `CURSOR_EXPIRED`. |
+| `ADO_SCOPE_CACHE_MAX_ENTRIES` | `50` | Maximum concurrent scope snapshots in memory |
 
 ### Corporate CA certificates (on-prem TFS)
 

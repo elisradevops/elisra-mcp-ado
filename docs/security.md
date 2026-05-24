@@ -84,18 +84,13 @@ The key protects the HTTP bridge only — the stdio transport (`elisra-mcp-ado` 
 
 ---
 
-## Full-Response Guard: ADO_FULL_RESPONSE_MAX_ITEMS
+## Pagination Guard: ADO_PAGE_SIZE_MAX
 
-Tools that support `responseMode="full"` check item count against `ADO_FULL_RESPONSE_MAX_ITEMS` (default: 50) before returning a payload. If the count exceeds the cap, the tool returns an error instead of a potentially oversized LLM context:
+All review tools return results one page at a time. The maximum page size is bounded by `ADO_PAGE_SIZE_MAX` (default: 200 — the ADO `workitemsbatch` ceiling). Callers cannot request more items per page than this limit.
 
-```
-Full mode rejected: 312 items exceeds ADO_FULL_RESPONSE_MAX_ITEMS (50).
-Use responseMode="samples" or narrow the scope.
-```
+The server-side snapshot cache (`ScopeSnapshotCache`) holds resolved ID lists for up to `ADO_SCOPE_CACHE_MAX_ENTRIES` concurrent scopes (default: 50) with a TTL of `ADO_SCOPE_CACHE_TTL_MS` (default: 600 000 ms). This bounds memory usage to approximately 8 MB worst-case.
 
-Purpose: prevent accidental large context injections that could degrade LLM performance, exhaust token budgets, or trigger context-length errors. The cap applies only to `full` mode — `samples`, `overview`, and `ids` modes have their own bounded outputs and are not subject to this guard.
-
-Adjust the cap by setting `ADO_FULL_RESPONSE_MAX_ITEMS` in `.env`. The value is validated as a positive integer at startup.
+Purpose: prevent unbounded context injections that could degrade LLM performance, exhaust token budgets, or trigger context-length errors. The model iterates via `cursor` until `pageInfo.isComplete=true`, accumulating items locally before drawing conclusions — it never receives an unsized response.
 
 ---
 

@@ -28,8 +28,10 @@ const envSchema = z.object({
     .optional()
     .default('false')
     .transform((v) => v === 'true'),
-  ADO_FULL_RESPONSE_MAX_ITEMS: z.coerce.number().int().min(1).default(200),
-  ADO_MAX_REVIEW_ITEMS: z.coerce.number().int().min(1).max(2000).default(500),
+  ADO_PAGE_SIZE_DEFAULT: z.coerce.number().int().min(1).max(200).default(50),
+  ADO_PAGE_SIZE_MAX: z.coerce.number().int().min(1).max(200).default(200),
+  ADO_SCOPE_CACHE_TTL_MS: z.coerce.number().int().min(1000).default(600000),
+  ADO_SCOPE_CACHE_MAX_ENTRIES: z.coerce.number().int().min(1).default(50),
   ADO_REVIEW_EXTRA_FIELDS: z
     .string()
     .optional()
@@ -75,8 +77,10 @@ function mapToConfig(env: ParsedEnv): AppConfig {
     adoEnableDebugOutput: env.ADO_ENABLE_DEBUG_OUTPUT,
     adoRequestTimeoutMs: env.ADO_REQUEST_TIMEOUT_MS,
     adoAllowUnknownFields: env.ADO_ALLOW_UNKNOWN_FIELDS,
-    adoFullResponseMaxItems: env.ADO_FULL_RESPONSE_MAX_ITEMS,
-    adoMaxReviewItems: env.ADO_MAX_REVIEW_ITEMS,
+    adoPageSizeDefault: env.ADO_PAGE_SIZE_DEFAULT,
+    adoPageSizeMax: env.ADO_PAGE_SIZE_MAX,
+    adoScopeCacheTtlMs: env.ADO_SCOPE_CACHE_TTL_MS,
+    adoScopeCacheMaxEntries: env.ADO_SCOPE_CACHE_MAX_ENTRIES,
     adoReviewExtraFields: env.ADO_REVIEW_EXTRA_FIELDS,
     adoTraceabilityLinkTokens: env.ADO_TRACEABILITY_LINK_TOKENS,
     logLevel: env.LOG_LEVEL,

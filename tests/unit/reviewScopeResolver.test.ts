@@ -19,7 +19,10 @@ const baseConfig: AppConfig = {
   adoEnableDebugOutput: false,
   adoRequestTimeoutMs: 5000,
   adoAllowUnknownFields: false,
-  adoFullResponseMaxItems: 50,
+  adoPageSizeDefault: 50,
+  adoPageSizeMax: 200,
+  adoScopeCacheTtlMs: 600000,
+  adoScopeCacheMaxEntries: 50,
   logLevel: 'silent' as unknown as AppConfig['logLevel'],
 };
 
@@ -31,6 +34,7 @@ function makeWiqlClient(ids: number[] = [1, 2, 3]): IWiqlClient {
       targetIds: [],
       totalMatched: ids.length,
       queryType: 'flat',
+      wiqlMaybeTruncated: false,
     } satisfies WiqlResult),
   };
 }
@@ -44,6 +48,7 @@ function makeLinkWiqlClient(sourceIds: number[], targetIds: number[]): IWiqlClie
       targetIds,
       totalMatched: allIds.length,
       queryType: 'tree',
+      wiqlMaybeTruncated: false,
     } satisfies WiqlResult),
   };
 }
@@ -549,5 +554,56 @@ describe('ReviewScopeResolver — linkQuery resultSide', () => {
     };
     const result = await resolver.resolve(scope);
     expect(result.ids).toEqual(expect.arrayContaining([10, 20, 30, 40]));
+  });
+});
+
+describe('wiqlMaybeTruncated warning propagation', () => {
+  function makeTruncatedClient(ids: number[]): IWiqlClient {
+    return {
+      execute: vi.fn().mockResolvedValue({
+        ids,
+        sourceIds: ids,
+        targetIds: [],
+        totalMatched: ids.length,
+        queryType: 'flat',
+        wiqlMaybeTruncated: true,
+      } satisfies WiqlResult),
+    };
+  }
+
+  it('fieldFilters source adds truncation warning when wiqlMaybeTruncated=true', async () => {
+    const client = makeTruncatedClient([1, 2]);
+    const resolver = makeResolver(client);
+    const scope: ReviewScope = {
+      project: 'PROJ',
+      auth: AUTH,
+      source: { type: 'fieldFilters', filters: [{ field: 'System.WorkItemType', operator: '=', value: 'Requirement' }] },
+    };
+    const result = await resolver.resolve(scope);
+    expect(result.warnings.some((w) => w.includes('20000'))).toBe(true);
+  });
+
+  it('wiql source adds truncation warning when wiqlMaybeTruncated=true', async () => {
+    const client = makeTruncatedClient([1, 2]);
+    const resolver = makeResolver(client);
+    const scope: ReviewScope = {
+      project: 'PROJ',
+      auth: AUTH,
+      source: { type: 'wiql', wiql: 'SELECT [System.Id] FROM WorkItems' },
+    };
+    const result = await resolver.resolve(scope);
+    expect(result.warnings.some((w) => w.includes('20000'))).toBe(true);
+  });
+
+  it('fieldFilters source with wiqlMaybeTruncated=false has no truncation warning', async () => {
+    const client = makeWiqlClient([1, 2, 3]);
+    const resolver = makeResolver(client);
+    const scope: ReviewScope = {
+      project: 'PROJ',
+      auth: AUTH,
+      source: { type: 'fieldFilters', filters: [{ field: 'System.WorkItemType', operator: '=', value: 'Requirement' }] },
+    };
+    const result = await resolver.resolve(scope);
+    expect(result.warnings.some((w) => w.includes('20000'))).toBe(false);
   });
 });

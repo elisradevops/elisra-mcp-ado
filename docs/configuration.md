@@ -17,7 +17,10 @@ All configuration is supplied via environment variables. Copy `.env.example` to 
 | `ADO_ENABLE_DEBUG_OUTPUT` | `false` | No | Enables the `ado_debug_compile_wiql` tool and adds `debugWiql` to applicable scope responses. Do not enable in production — compiled WIQL may contain field values. |
 | `ADO_REQUEST_TIMEOUT_MS` | `30000` | No | Per-request HTTP timeout in milliseconds. Minimum 1000. Increase for slow on-prem TFS or large result sets. |
 | `ADO_ALLOW_UNKNOWN_FIELDS` | `false` | No | When `false`, the WIQL compiler rejects field references absent from the field discovery cache. Set to `true` to pass unknown refs through unvalidated (a warning is added to the response). |
-| `ADO_FULL_RESPONSE_MAX_ITEMS` | `50` | No | Hard cap on items returned in full-response mode. Prevents oversized payloads from overwhelming the LLM context window. |
+| `ADO_PAGE_SIZE_DEFAULT` | `50` | No | Default items per page for cursor-paginated review tools. |
+| `ADO_PAGE_SIZE_MAX` | `200` | No | Maximum items per page (ADO `getWorkItems` batch ceiling). |
+| `ADO_SCOPE_CACHE_TTL_MS` | `600000` | No | Cursor lifetime in milliseconds (10 min). Expired cursors return `CURSOR_EXPIRED`. |
+| `ADO_SCOPE_CACHE_MAX_ENTRIES` | `50` | No | Maximum concurrent scope snapshots in memory. Raise for multi-agent deployments (single-replica only). |
 | `ADO_REVIEW_EXTRA_FIELDS` | `` (empty) | No | Comma-separated additional field reference names fetched on every review call (e.g. `Custom.SPAWBS,Custom.SubModule,Custom.CustomerID`). Merged with the built-in `REVIEW_FIELDS` list; refs absent from the collection are dropped and reported in `missing_fields` warnings. |
 | `ADO_TRACEABILITY_LINK_TOKENS` | `Affects,CoveredBy,TestedBy` | No | Comma-separated substring tokens used to recognize traceability links. A relation `rel` is treated as traceability when any token is a substring of `rel`. Default covers `Affects-*`, `Elisra.CoveredBy-*`, and `TestedBy-*`. Add tokens (e.g. `Implements`) to recognize customer-specific relation types. |
 | `NODE_EXTRA_CA_CERTS` | — | On-prem TLS only | Absolute path inside the container to a PEM-encoded corporate CA bundle. Required when TFS uses a self-signed or internal CA. There is no `rejectUnauthorized: false` fallback — TLS errors are fatal. |
@@ -87,6 +90,11 @@ There is no `rejectUnauthorized: false` fallback. A TLS handshake failure is a h
 
 ## Response Size Tuning
 
-The full-mode guard (`ADO_FULL_RESPONSE_MAX_ITEMS`) prevents large work item payloads from filling the LLM context window. The default of 50 is conservative. Raise it if your typical review scopes are larger and your context window can accommodate the output.
+Review tools return one page of results per call. The LLM iterates via `cursor` until `pageInfo.isComplete=true`, accumulating items before drawing conclusions.
 
-For bulk analysis, use `responseMode: "overview"` first to get risk counts and `sampleHighRiskIds`, then drill into specific items with context packets rather than requesting full payloads.
+- `ADO_PAGE_SIZE_DEFAULT` (default 50) controls the page size when the caller does not specify one.
+- `ADO_PAGE_SIZE_MAX` (default 200) caps the page size regardless of what the caller requests.
+- `ADO_SCOPE_CACHE_TTL_MS` (default 600000) sets the cursor lifetime. Increase it if your reviews span multiple LLM context windows or take longer than 10 minutes.
+- `ADO_SCOPE_CACHE_MAX_ENTRIES` (default 50) bounds memory use. Each entry holds a list of integer IDs (~8 bytes each); 50 entries × 20000 IDs ≈ 8 MB worst case.
+
+For scope exploration before a full review, use `ado_resolve_review_scope` with `responseMode="overview"` to get `totalMatched` before iterating.

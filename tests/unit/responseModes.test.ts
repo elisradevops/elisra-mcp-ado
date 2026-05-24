@@ -1,115 +1,86 @@
 import { describe, it, expect } from 'vitest';
 import {
-  checkFullModeGuard,
-  takeSampleIds,
-  buildOverviewPayload,
-  OVERVIEW_SAMPLE_IDS,
-  DEFAULT_SAMPLE_SIZE,
+  buildPageInfo,
+  ANTI_HALLUCINATION_BANNER,
+  RESPONSE_MODES,
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
 } from '../../src/domain/responseModes.js';
 
-// ─── checkFullModeGuard ───────────────────────────────────────────────────────
+// ─── buildPageInfo ────────────────────────────────────────────────────────────
 
-describe('checkFullModeGuard', () => {
-  it('allows when count equals cap', () => {
-    const result = checkFullModeGuard(50, 50);
-    expect(result.allowed).toBe(true);
-    expect(result.reason).toBeUndefined();
+describe('buildPageInfo', () => {
+  it('isComplete is true when nextCursor is null', () => {
+    const info = buildPageInfo(10, 0, 50, 10, null);
+    expect(info.isComplete).toBe(true);
+    expect(info.nextCursor).toBeNull();
   });
 
-  it('allows when count is below cap', () => {
-    const result = checkFullModeGuard(10, 50);
-    expect(result.allowed).toBe(true);
+  it('isComplete is false when nextCursor is a string', () => {
+    const info = buildPageInfo(100, 0, 50, 50, 'some-cursor');
+    expect(info.isComplete).toBe(false);
+    expect(info.nextCursor).toBe('some-cursor');
   });
 
-  it('rejects when count exceeds cap', () => {
-    const result = checkFullModeGuard(51, 50);
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toBeDefined();
-    expect(result.reason).toContain('51');
-    expect(result.reason).toContain('50');
-    expect(result.reason).toContain('Full mode rejected');
+  it('returns correct field values', () => {
+    const info = buildPageInfo(75, 25, 50, 50, 'cursor-abc');
+    expect(info.totalMatched).toBe(75);
+    expect(info.offset).toBe(25);
+    expect(info.pageSize).toBe(50);
+    expect(info.returnedCount).toBe(50);
   });
 
-  it('reason mentions narrowing scope', () => {
-    const result = checkFullModeGuard(100, 50);
-    expect(result.reason).toContain('samples');
-  });
-
-  it('allows zero items', () => {
-    const result = checkFullModeGuard(0, 50);
-    expect(result.allowed).toBe(true);
-  });
-
-  it('rejects when cap is 0 and count > 0', () => {
-    const result = checkFullModeGuard(1, 0);
-    expect(result.allowed).toBe(false);
+  it('works for empty result set', () => {
+    const info = buildPageInfo(0, 0, 50, 0, null);
+    expect(info.totalMatched).toBe(0);
+    expect(info.returnedCount).toBe(0);
+    expect(info.isComplete).toBe(true);
   });
 });
 
-// ─── takeSampleIds ────────────────────────────────────────────────────────────
+// ─── ANTI_HALLUCINATION_BANNER ────────────────────────────────────────────────
 
-describe('takeSampleIds', () => {
-  it('returns first N IDs', () => {
-    const ids = [1, 2, 3, 4, 5, 6, 7];
-    expect(takeSampleIds(ids)).toHaveLength(OVERVIEW_SAMPLE_IDS);
-    expect(takeSampleIds(ids)).toEqual([1, 2, 3, 4, 5]);
+describe('ANTI_HALLUCINATION_BANNER', () => {
+  it('is a non-empty string', () => {
+    expect(typeof ANTI_HALLUCINATION_BANNER).toBe('string');
+    expect(ANTI_HALLUCINATION_BANNER.length).toBeGreaterThan(0);
   });
 
-  it('returns all IDs when fewer than N', () => {
-    const ids = [10, 20];
-    expect(takeSampleIds(ids)).toEqual([10, 20]);
+  it('contains "items[]"', () => {
+    expect(ANTI_HALLUCINATION_BANNER).toContain('items[]');
   });
 
-  it('accepts custom n', () => {
-    const ids = [1, 2, 3, 4, 5, 6];
-    expect(takeSampleIds(ids, 3)).toEqual([1, 2, 3]);
-  });
-
-  it('returns empty array for empty input', () => {
-    expect(takeSampleIds([])).toEqual([]);
+  it('contains "nextCursor"', () => {
+    expect(ANTI_HALLUCINATION_BANNER).toContain('nextCursor');
   });
 });
 
-// ─── buildOverviewPayload ─────────────────────────────────────────────────────
+// ─── RESPONSE_MODES ───────────────────────────────────────────────────────────
 
-describe('buildOverviewPayload', () => {
-  it('includes totalMatched and sampleIds', () => {
-    const ids = [1, 2, 3, 4, 5, 6, 7];
-    const payload = buildOverviewPayload(ids);
-    expect(payload.totalMatched).toBe(7);
-    expect(payload.sampleIds).toEqual([1, 2, 3, 4, 5]);
+describe('RESPONSE_MODES', () => {
+  it('contains overview, ids, and page', () => {
+    expect(RESPONSE_MODES).toContain('overview');
+    expect(RESPONSE_MODES).toContain('ids');
+    expect(RESPONSE_MODES).toContain('page');
   });
 
-  it('merges extraFields', () => {
-    const ids = [1, 2];
-    const payload = buildOverviewPayload(ids, { project: 'MyProject', warnings: [] });
-    expect(payload.project).toBe('MyProject');
-    expect(payload.warnings).toEqual([]);
-    expect(payload.totalMatched).toBe(2);
+  it('does NOT contain samples', () => {
+    expect(RESPONSE_MODES).not.toContain('samples');
   });
 
-  it('extraFields can override totalMatched', () => {
-    const ids = [1, 2, 3];
-    // extraFields spread comes after defaults — extra totalMatched overrides
-    const payload = buildOverviewPayload(ids, { totalMatched: 999 });
-    expect(payload.totalMatched).toBe(999);
-  });
-
-  it('empty ids gives empty sampleIds and zero totalMatched', () => {
-    const payload = buildOverviewPayload([]);
-    expect(payload.totalMatched).toBe(0);
-    expect(payload.sampleIds).toEqual([]);
+  it('does NOT contain full', () => {
+    expect(RESPONSE_MODES).not.toContain('full');
   });
 });
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-describe('responseModes constants', () => {
-  it('OVERVIEW_SAMPLE_IDS is 5', () => {
-    expect(OVERVIEW_SAMPLE_IDS).toBe(5);
+describe('page size constants', () => {
+  it('DEFAULT_PAGE_SIZE is 50', () => {
+    expect(DEFAULT_PAGE_SIZE).toBe(50);
   });
 
-  it('DEFAULT_SAMPLE_SIZE is 10', () => {
-    expect(DEFAULT_SAMPLE_SIZE).toBe(10);
+  it('MAX_PAGE_SIZE is 200', () => {
+    expect(MAX_PAGE_SIZE).toBe(200);
   });
 });
