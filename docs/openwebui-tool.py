@@ -115,7 +115,8 @@ class Tools:
         source: dict,
         project: Optional[str] = None,
         response_mode: str = "overview",
-        max_ids: int = 500,
+        cursor: Optional[str] = None,
+        page_size: int = 50,
         __user__: dict = {},
     ) -> str:
         """
@@ -128,13 +129,16 @@ class Tools:
                 {"type": "fieldFilters", "filters": [{"field": "System.WorkItemType", "operator": "=", "value": "Requirement"}]}
                 {"type": "linkedItems", "rootId": 42, "depth": 2}
             project: Project name (required for wiql and fieldFilters sources).
-            response_mode: "overview" | "ids" | "samples" | "full"
-            max_ids: Cap on returned IDs.
+            response_mode: "overview" (counts + preview only) | "ids" (paginated ID list).
+            cursor: Pagination cursor from a previous call's pageInfo.nextCursor. Omit for first page.
+            page_size: IDs per page in "ids" mode (default 50, max 200).
         """
         uv = UserValves(**(__user__ or {}).get("valves") or {})
-        args: dict[str, Any] = {"source": source, "responseMode": response_mode, "maxIds": max_ids}
+        args: dict[str, Any] = {"source": source, "responseMode": response_mode, "pageSize": page_size}
         if project:
             args["project"] = project
+        if cursor:
+            args["cursor"] = cursor
         return self._call("ado_resolve_review_scope", args, uv)
 
     # ------------------------------------------------------------------ #
@@ -146,7 +150,6 @@ class Tools:
         ids: list,
         fields: Optional[list] = None,
         expand: str = "none",
-        response_mode: str = "full",
         __user__: dict = {},
     ) -> str:
         """
@@ -156,10 +159,9 @@ class Tools:
             ids: List of work item IDs (max 200 per call).
             fields: Optional list of field reference names to include.
             expand: "none" | "relations" | "all"
-            response_mode: "overview" | "samples" | "full"
         """
         uv = UserValves(**(__user__ or {}).get("valves") or {})
-        args: dict[str, Any] = {"ids": ids, "expand": expand, "responseMode": response_mode}
+        args: dict[str, Any] = {"ids": ids, "expand": expand}
         if fields:
             args["fields"] = fields
         return self._call("ado_get_work_items_by_ids", args, uv)

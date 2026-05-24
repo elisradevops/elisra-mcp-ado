@@ -80,6 +80,32 @@ const HTTP_BASE_ENV = {
   MCP_HTTP_BEARER_TOKEN: 'test-bearer',
 };
 
+describe('env — pagination + cache config', () => {
+  it('defaults: pageSize=50, pageMax=200, cacheTtl=600000, cacheMax=50', () => {
+    withEnv({ ...BASE_ENV }, () => {
+      const cfg = loadConfig();
+      expect(cfg.adoPageSizeDefault).toBe(50);
+      expect(cfg.adoPageSizeMax).toBe(200);
+      expect(cfg.adoScopeCacheTtlMs).toBe(600000);
+      expect(cfg.adoScopeCacheMaxEntries).toBe(50);
+    });
+  });
+
+  it('ADO_PAGE_SIZE_DEFAULT overridden', () => {
+    withEnv({ ...BASE_ENV, ADO_PAGE_SIZE_DEFAULT: '25' }, () => {
+      const cfg = loadConfig();
+      expect(cfg.adoPageSizeDefault).toBe(25);
+    });
+  });
+
+  it('ADO_SCOPE_CACHE_TTL_MS overridden', () => {
+    withEnv({ ...BASE_ENV, ADO_SCOPE_CACHE_TTL_MS: '300000' }, () => {
+      const cfg = loadConfig();
+      expect(cfg.adoScopeCacheTtlMs).toBe(300000);
+    });
+  });
+});
+
 describe('env — MCP_TRANSPORT=http validation', () => {
   it('http without bearer token → throws', () => {
     withEnv({ ...HTTP_BASE_ENV, MCP_HTTP_BEARER_TOKEN: undefined }, () => {

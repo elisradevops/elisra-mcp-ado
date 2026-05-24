@@ -160,7 +160,10 @@ Both services share the same set of ADO variables. The mcpo service adds `MCPO_A
 | `ADO_ENABLE_DEBUG_OUTPUT` | `false` | Emit verbose ADO request/response logs |
 | `ADO_REQUEST_TIMEOUT_MS` | `30000` | Per-request timeout in milliseconds |
 | `ADO_ALLOW_UNKNOWN_FIELDS` | `false` | If `false`, WIQL compiler rejects fields not in the discovery cache |
-| `ADO_FULL_RESPONSE_MAX_ITEMS` | `50` | Maximum items returned in full (non-sampled) mode |
+| `ADO_PAGE_SIZE_DEFAULT` | `50` | Default items per page for cursor-paginated review tools |
+| `ADO_PAGE_SIZE_MAX` | `200` | Maximum items per page (ADO batch ceiling) |
+| `ADO_SCOPE_CACHE_TTL_MS` | `600000` | Cursor lifetime in ms (10 min); expired cursors return `CURSOR_EXPIRED` |
+| `ADO_SCOPE_CACHE_MAX_ENTRIES` | `50` | Maximum concurrent scope snapshots in memory |
 | `LOG_LEVEL` | `info` | Pino log level: `fatal` / `error` / `warn` / `info` / `debug` / `trace` |
 | `NODE_EXTRA_CA_CERTS` | — | Path **inside the container** to the corporate CA cert file |
 | `MCPO_API_KEY` | `changeme` | mcpo service only — bearer token for HTTP access |

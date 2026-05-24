@@ -7,8 +7,10 @@ export interface AppConfig {
   adoEnableDebugOutput: boolean;
   adoRequestTimeoutMs: number;
   adoAllowUnknownFields: boolean;
-  adoFullResponseMaxItems: number;
-  adoMaxReviewItems: number;
+  adoPageSizeDefault: number;
+  adoPageSizeMax: number;
+  adoScopeCacheTtlMs: number;
+  adoScopeCacheMaxEntries: number;
   adoReviewExtraFields: string[];
   adoTraceabilityLinkTokens: string[];
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace';

@@ -16,6 +16,7 @@ import { RequirementReviewService } from '../../services/requirementReviewServic
 import { ContextPacketService } from '../../services/contextPacketService.js';
 import { CompletenessGapService } from '../../services/completenessGapService.js';
 import { ConsistencyCandidateService } from '../../services/consistencyCandidateService.js';
+import { ScopeSnapshotCache } from '../../services/scopeSnapshotCache.js';
 import { registerHealthTools } from './healthTools.js';
 import { registerFieldTools } from './fieldTools.js';
 import { registerLinkTypeTools } from './linkTypeTools.js';
@@ -39,6 +40,7 @@ export interface ToolDeps {
   contextPacketService: ContextPacketService;
   completenessGapService: CompletenessGapService;
   consistencyCandidateService: ConsistencyCandidateService;
+  scopeSnapshotCache: ScopeSnapshotCache;
 }
 
 export function buildToolDeps(config: AppConfig, logger: Logger): ToolDeps {
@@ -57,6 +59,7 @@ export function buildToolDeps(config: AppConfig, logger: Logger): ToolDeps {
   const contextPacketService = new ContextPacketService(workItemService, wiqlClient, config, logger);
   const completenessGapService = new CompletenessGapService();
   const consistencyCandidateService = new ConsistencyCandidateService();
+  const scopeSnapshotCache = new ScopeSnapshotCache(config.adoScopeCacheTtlMs, config.adoScopeCacheMaxEntries);
 
   return {
     config,
@@ -72,6 +75,7 @@ export function buildToolDeps(config: AppConfig, logger: Logger): ToolDeps {
     contextPacketService,
     completenessGapService,
     consistencyCandidateService,
+    scopeSnapshotCache,
   };
 }
 

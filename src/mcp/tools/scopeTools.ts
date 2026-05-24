@@ -5,8 +5,9 @@ import { resolveAuthContext } from '../../auth/authContext.js';
 import { safeJsonStringify } from '../../utils/safeJson.js';
 import type { ReviewScope } from '../../domain/reviewScope.js';
 import { groupByFields, COMPACT_FIELDS } from '../../services/workItemService.js';
-import { takeSampleIds } from '../../domain/responseModes.js';
 import { OperatorSchema, FilterValueSchema, FilterNodeSchema } from '../../domain/fieldFilter.js';
+import { ANTI_HALLUCINATION_BANNER } from '../../domain/responseModes.js';
+import { encodeCursor, decodeCursor } from '../../services/scopeSnapshotCache.js';
 
 export const FieldFilterSchema = z.object({
   field: z.string().describe('Field reference name (e.g. System.State, Custom.CustomerID)'),
@@ -89,7 +90,7 @@ const ValidatedSourceSchema = SourceSchema.superRefine((v, ctx) => {
 });
 
 export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
-  const { config, logger, wiqlClient, workItemService, reviewScopeResolver } = deps;
+  const { config, logger, wiqlClient, workItemService, reviewScopeResolver, scopeSnapshotCache } = deps;
 
   // ── ado_resolve_review_scope ────────────────────────────────────────────────
 
@@ -97,44 +98,119 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
     'ado_resolve_review_scope',
     'Resolve a review scope (WIQL, IDs, field filters, or linked traversal) to a list of matching work item IDs. ' +
     'Always call this BEFORE calling any review tool to confirm scope and check totalMatched. ' +
-    `If totalMatched > fullResponseCap (returned in the response, default ${config.adoFullResponseMaxItems}), do NOT call review tools with responseMode="full" — ` +
-    'use responseMode="overview" first, then responseMode="samples" with sampleSize=10 for findings. ' +
-    'Default response mode is "overview" (counts only). Use responseMode="ids" for the full ID list.',
+    'Default responseMode is "overview" (counts + incomplete preview IDs only — do NOT use preview IDs for analysis). ' +
+    'Use responseMode="ids" to retrieve the full ID list one page at a time via cursor pagination. ' +
+    'To get all IDs: call with responseMode="ids", if pageInfo.isComplete=false call again with cursor=pageInfo.nextCursor, repeat until isComplete=true. ' +
+    'Never reason about IDs you have not yet received.',
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name. Required for wiql and fieldFilters sources.'),
       source: ValidatedSourceSchema,
       responseMode: z.enum(['overview', 'ids']).optional().default('overview'),
-      maxIds: z.number().int().positive().optional().default(500).describe('Cap on returned IDs in ids mode.'),
+      cursor: z.string().optional().describe(
+        'Pagination cursor from a previous call\'s pageInfo.nextCursor. Only used in responseMode="ids". Omit for first page.'
+      ),
+      pageSize: z.number().int().positive().max(200).optional().describe(
+        `IDs per page in "ids" mode. Default ${config.adoPageSizeDefault}, max ${config.adoPageSizeMax}.`
+      ),
     },
-    async ({ pat, project, source, responseMode, maxIds }) => {
+    async ({ pat, project, source, responseMode, cursor, pageSize }) => {
       const auth = resolveAuthContext(config, pat);
       const scope: ReviewScope = { project, auth, source };
 
       try {
-        const resolution = await reviewScopeResolver.resolve(scope);
-
-        const base = {
-          project: resolution.project,
-          sourceType: resolution.sourceType,
-          totalMatched: resolution.totalMatched,
-          fullResponseCap: config.adoFullResponseMaxItems,
-          warnings: resolution.warnings,
-          ...(resolution.debugWiql !== undefined ? { debugWiql: resolution.debugWiql } : {}),
-        };
-
         if (responseMode === 'ids') {
-          const ids = maxIds ? resolution.ids.slice(0, maxIds) : resolution.ids;
-          return { content: [{ type: 'text' as const, text: safeJsonStringify({ ...base, ids }, 2) }] };
+          const effectivePageSize = Math.min(pageSize ?? config.adoPageSizeDefault, config.adoPageSizeMax);
+
+          let allIds: number[];
+          let totalMatched: number;
+          let offset: number;
+          let snapshotId: string;
+          let warnings: string[];
+          let resolvedProject: string | undefined;
+          let resolvedSourceType: string;
+          let debugWiql: string | undefined;
+
+          if (!cursor) {
+            const resolution = await reviewScopeResolver.resolve(scope);
+            snapshotId = scopeSnapshotCache.put(resolution.ids, {
+              project: resolution.project,
+              sourceType: resolution.sourceType,
+            });
+            allIds = resolution.ids;
+            totalMatched = resolution.totalMatched;
+            offset = 0;
+            warnings = resolution.warnings;
+            resolvedProject = resolution.project;
+            resolvedSourceType = resolution.sourceType;
+            debugWiql = resolution.debugWiql;
+          } else {
+            const decoded = decodeCursor(cursor);
+            if (!decoded) {
+              return {
+                content: [{ type: 'text' as const, text: JSON.stringify({ error: 'CURSOR_INVALID', message: 'Cursor is malformed. Restart pagination by calling without cursor.' }) }],
+                isError: true,
+              };
+            }
+            const snapshot = scopeSnapshotCache.get(decoded.snapshotId);
+            if (!snapshot) {
+              return {
+                content: [{ type: 'text' as const, text: JSON.stringify({ error: 'CURSOR_EXPIRED', message: 'Cursor has expired or been evicted. Restart pagination by calling without cursor.' }) }],
+                isError: true,
+              };
+            }
+            allIds = snapshot.ids;
+            totalMatched = snapshot.ids.length;
+            offset = decoded.offset;
+            snapshotId = decoded.snapshotId;
+            warnings = [];
+            resolvedProject = snapshot.meta.project;
+            resolvedSourceType = snapshot.meta.sourceType;
+            debugWiql = undefined;
+          }
+
+          const pageIds = allIds.slice(offset, offset + effectivePageSize);
+          const nextOffset = offset + effectivePageSize;
+          const nextCursor = nextOffset < allIds.length ? encodeCursor(snapshotId, nextOffset) : null;
+
+          return {
+            content: [{
+              type: 'text' as const,
+              text: safeJsonStringify({
+                _instruction: ANTI_HALLUCINATION_BANNER,
+                project: resolvedProject,
+                sourceType: resolvedSourceType,
+                totalMatched,
+                responseMode: 'ids',
+                pageInfo: {
+                  totalMatched,
+                  offset,
+                  pageSize: effectivePageSize,
+                  returnedCount: pageIds.length,
+                  nextCursor,
+                  isComplete: nextCursor === null,
+                },
+                ids: pageIds,
+                warnings,
+                ...(debugWiql !== undefined ? { debugWiql } : {}),
+              }, 2),
+            }],
+          };
         }
 
-        // overview: include sample IDs for drill-down
+        // overview mode
+        const resolution = await reviewScopeResolver.resolve(scope);
         return {
           content: [{
             type: 'text' as const,
             text: safeJsonStringify({
-              ...base,
-              sampleIds: takeSampleIds(resolution.ids),
+              _instruction: ANTI_HALLUCINATION_BANNER,
+              project: resolution.project,
+              sourceType: resolution.sourceType,
+              totalMatched: resolution.totalMatched,
+              warnings: resolution.warnings,
+              incompletePreviewIds_doNotUseForAnalysis: resolution.ids.slice(0, 10),
+              ...(resolution.debugWiql !== undefined ? { debugWiql: resolution.debugWiql } : {}),
             }, 2),
           }],
         };

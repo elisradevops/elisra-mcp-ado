@@ -11,3 +11,4 @@ coverage/
 *.key
 *.pfx
 .DS_Store
+AGENTS.md

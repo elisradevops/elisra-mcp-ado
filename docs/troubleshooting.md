@@ -160,21 +160,21 @@ WHERE [System.AreaPath] UNDER 'MyProject\Sprint 5'
 
 ---
 
-## 9. Full mode rejected — too many items
+## 9. Cursor expired — pagination restarted
 
-**Symptom**: A tool call using full (non-sampled) response mode fails or is rejected because the result set exceeds the configured limit.
+**Symptom**: A paginated tool call returns `{"error": "CURSOR_EXPIRED", ...}` on a follow-up page.
 
-**Cause**: The query returns more items than `ADO_FULL_RESPONSE_MAX_ITEMS` (default: `50`). Full mode is intentionally capped to prevent unbounded responses.
+**Cause**: Cursors are valid for `ADO_SCOPE_CACHE_TTL_MS` milliseconds (default 10 minutes). If the model waited too long between pages, the server-side snapshot was evicted.
 
-**Fix (option A)**: Narrow the query scope — add more `WHERE` conditions to reduce the result set.
+**Fix (option A)**: Restart pagination — call the tool again without a `cursor`. The server re-resolves the scope and returns a fresh `pageInfo.nextCursor`.
 
-**Fix (option B)**: Use sampled/paginated mode instead of full mode.
-
-**Fix (option C)**: Raise the limit if you have confirmed the larger response is safe:
+**Fix (option B)**: Increase the TTL if your reviews routinely span more than 10 minutes:
 
 ```env
-ADO_FULL_RESPONSE_MAX_ITEMS=200
+ADO_SCOPE_CACHE_TTL_MS=1800000
 ```
+
+**Fix (option C)**: Use a smaller `pageSize` so each page completes faster and the cursor stays alive between calls.
 
 ---
 

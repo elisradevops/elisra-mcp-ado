@@ -34,6 +34,8 @@ export interface WiqlResult {
   targetIds: number[];
   totalMatched: number;
   queryType: string;
+  // ADO WIQL hard ceiling: server returns at most 20000 ids per query regardless of scope size.
+  wiqlMaybeTruncated: boolean;
 }
 
 export class WiqlClient implements IWiqlClient {
@@ -71,6 +73,7 @@ export class WiqlClient implements IWiqlClient {
       targetIds: extracted.targetIds,
       totalMatched: extracted.allIds.length,
       queryType: response.queryType ?? 'unknown',
+      wiqlMaybeTruncated: extracted.allIds.length === 20000,
     };
 
     this.logger.debug({ totalMatched: result.totalMatched, queryType: result.queryType }, 'WIQL complete');

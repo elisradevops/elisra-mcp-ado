@@ -4,18 +4,16 @@ import type { ToolDeps } from './registerTools.js';
 import { resolveAuthContext } from '../../auth/authContext.js';
 import { safeJsonStringify } from '../../utils/safeJson.js';
 import { toCompactRecord, COMPACT_FIELDS, NEVER_INCLUDE_BY_DEFAULT } from '../../services/workItemService.js';
-import { checkFullModeGuard } from '../../domain/responseModes.js';
 
 export function registerWorkItemTools(server: McpServer, deps: ToolDeps): void {
   const { config, logger, workItemService } = deps;
 
   server.tool(
     'ado_get_work_items_by_ids',
-    'Fetch work items by IDs and return them in the requested response mode. ' +
-    'Default mode is "samples" (first 10 compact records). ' +
-    'Use "full" to get all fields (capped by ADO_FULL_RESPONSE_MAX_ITEMS). ' +
-    'Use "ids" to just confirm which IDs exist. ' +
-    'Use "overview" for type/state counts only.',
+    'Fetch work items by a known ID list (max 200 per call) and return all of them. ' +
+    'Use "overview" responseMode for type/state counts only. ' +
+    'Use "ids" to confirm which IDs exist without fetching field data. ' +
+    'Default mode returns compact field data for every ID supplied.',
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name. Provide when known — scopes the batch API call to the project, avoiding 404s on on-prem ADO Server.'),
@@ -27,37 +25,27 @@ export function registerWorkItemTools(server: McpServer, deps: ToolDeps): void {
       expand: z.enum(['none', 'relations', 'all']).optional().default('none').describe(
         'Include relations or all links in the response.'
       ),
-      responseMode: z.enum(['overview', 'ids', 'samples', 'full']).optional().default('samples'),
-      sampleSize: z.number().int().positive().max(50).optional().default(10).describe(
-        'Number of items to return in samples mode.'
-      ),
+      responseMode: z.enum(['overview', 'ids', 'items']).optional().default('items'),
     },
-    async ({ pat, project, ids, fields, expand, responseMode, sampleSize }) => {
+    async ({ pat, project, ids, fields, expand, responseMode }) => {
       const auth = resolveAuthContext(config, pat);
 
       try {
-        // Field selection: user-provided > compact defaults (never include huge TCM fields by default)
-        const requestedFields = fields
-          ? fields.filter((f) => !NEVER_INCLUDE_BY_DEFAULT.has(f))
-          : [...COMPACT_FIELDS];
-
         if (responseMode === 'ids') {
           return {
             content: [{ type: 'text' as const, text: safeJsonStringify({ ids, count: ids.length }, 2) }],
           };
         }
 
+        // Field selection: user-provided > compact defaults (never include huge TCM fields by default)
+        const requestedFields = fields
+          ? fields.filter((f) => !NEVER_INCLUDE_BY_DEFAULT.has(f))
+          : [...COMPACT_FIELDS];
+
         const fetchOptions = {
-          fields: responseMode === 'full' ? (fields ?? undefined) : requestedFields,
+          fields: requestedFields,
           expand: expand === 'none' ? undefined : expand,
         } as const;
-
-        if (responseMode === 'full') {
-          const guard = checkFullModeGuard(ids.length, config.adoFullResponseMaxItems);
-          if (!guard.allowed) {
-            return { content: [{ type: 'text' as const, text: guard.reason! }], isError: true };
-          }
-        }
 
         const items = await workItemService.fetchMany(ids, auth, fetchOptions, project);
 
@@ -78,9 +66,7 @@ export function registerWorkItemTools(server: McpServer, deps: ToolDeps): void {
           };
         }
 
-        const sample = responseMode === 'samples' ? items.slice(0, sampleSize) : items;
-
-        const output = sample.map((item) => {
+        const output = items.map((item) => {
           const compact = toCompactRecord(item);
           if (expand !== 'none' && item.relations) {
             return { ...compact, relations: item.relations };
@@ -88,13 +74,12 @@ export function registerWorkItemTools(server: McpServer, deps: ToolDeps): void {
           return compact;
         });
 
-        logger.info({ count: items.length, responseMode }, 'ado_get_work_items_by_ids succeeded');
+        logger.info({ count: items.length }, 'ado_get_work_items_by_ids succeeded');
         return {
           content: [{
             type: 'text' as const,
             text: safeJsonStringify({
               count: items.length,
-              returned: output.length,
               items: output,
             }, 2),
           }],
