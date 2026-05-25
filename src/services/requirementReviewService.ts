@@ -154,31 +154,57 @@ function reviewVerifiable(item: AdoWorkItem): AttributeFinding {
   };
 }
 
-function reviewTraceable(item: AdoWorkItem, tokens: readonly string[]): AttributeFinding {
-  const traceability = hasTraceabilityLink(item, tokens);
+const WORK_ITEM_ID_FROM_URL = /\/workItems\/(\d+)(?:[/?#]|$)/i;
 
-  if (traceability === null) {
+function parseTargetId(url: string): number | null {
+  const m = WORK_ITEM_ID_FROM_URL.exec(url);
+  if (!m) return null;
+  const id = parseInt(m[1], 10);
+  return Number.isFinite(id) ? id : null;
+}
+
+function reviewTraceable(item: AdoWorkItem, tokens: readonly string[]): AttributeFinding {
+  if (!item.relations) {
     return {
       attribute: 'traceable',
       status: 'unknown',
       confidence: 'low',
       confidenceReason: 'Relations were not fetched for this work item.',
       evidence: [],
-      limitation: 'Re-run with expand=relations to evaluate traceability.',
+      limitation: 'Re-run with includeRelations=true to evaluate traceability.',
     };
   }
 
-  if (traceability) {
-    const links = (item.relations ?? [])
-      .filter((r) => tokens.some((t) => r.rel.includes(t)))
-      .map((r) => r.rel);
+  const matchedRelations = item.relations.filter((r) =>
+    tokens.some((t) => r.rel.includes(t))
+  );
 
+  // Parse and dedup links; relations with unparsable URLs are captured as evidence-only entries
+  const seen = new Set<string>();
+  const links: Array<{ rel: string; targetId: number }> = [];
+  const evidenceLines: string[] = [];
+
+  for (const r of matchedRelations) {
+    const targetId = r.url ? parseTargetId(r.url) : null;
+    const key = targetId !== null ? `${r.rel}#${targetId}` : r.rel;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (targetId !== null) {
+      links.push({ rel: r.rel, targetId });
+      evidenceLines.push(`Link: ${r.rel} → #${targetId}`);
+    } else {
+      evidenceLines.push(`Link: ${r.rel}`);
+    }
+  }
+
+  if (matchedRelations.length > 0) {
     return {
       attribute: 'traceable',
       status: 'ok',
       confidence: 'high',
       confidenceReason: 'At least one traceability link (Affects, CoveredBy, TestedBy) exists — deterministic.',
-      evidence: [...new Set(links)].map((r) => `Link: ${r}`),
+      evidence: evidenceLines,
+      links,
     };
   }
 
@@ -188,6 +214,7 @@ function reviewTraceable(item: AdoWorkItem, tokens: readonly string[]): Attribut
     confidence: 'high',
     confidenceReason: 'No traceability links (Affects, CoveredBy, TestedBy) found — deterministic.',
     evidence: [],
+    links: [],
     recommendation: 'Add traceability links to parent requirements, covering tests, or affected items.',
   };
 }

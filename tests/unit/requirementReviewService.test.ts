@@ -360,3 +360,70 @@ describe('summarizeFindings', () => {
     expect(summary.byRisk.none).toBe(0);
   });
 });
+
+// ─── traceable links[] (cross-scope join data) ────────────────────────────────
+
+const ADO_URL = (id: number) =>
+  `https://tfs.example.com/tfs/DefaultCollection/_apis/wit/workItems/${id}`;
+
+describe('RequirementReviewService — traceable.links', () => {
+  it('CoveredBy link populates links[].targetId', () => {
+    const item = makeItem({ 'System.Title': 'Req' }, [
+      { rel: 'Elisra.CoveredBy-Forward', url: ADO_URL(42), attributes: {} },
+    ]);
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
+    expect(f.status).toBe('ok');
+    expect(f.links).toEqual([{ rel: 'Elisra.CoveredBy-Forward', targetId: 42 }]);
+  });
+
+  it('evidence string includes → #targetId', () => {
+    const item = makeItem({ 'System.Title': 'Req' }, [
+      { rel: 'Elisra.CoveredBy-Forward', url: ADO_URL(42), attributes: {} },
+    ]);
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
+    expect(f.evidence[0]).toBe('Link: Elisra.CoveredBy-Forward → #42');
+  });
+
+  it('multiple matching links → all targetIds in links[]', () => {
+    const item = makeItem({ 'System.Title': 'Req' }, [
+      { rel: 'Elisra.CoveredBy-Forward', url: ADO_URL(10), attributes: {} },
+      { rel: 'Elisra.CoveredBy-Reverse', url: ADO_URL(20), attributes: {} },
+      { rel: 'System.LinkTypes.Hierarchy-Forward', url: ADO_URL(99), attributes: {} },
+    ]);
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
+    expect(f.status).toBe('ok');
+    expect(f.links).toHaveLength(2);
+    expect(f.links?.map((l) => l.targetId)).toEqual(expect.arrayContaining([10, 20]));
+  });
+
+  it('non-matching relations only → links === []', () => {
+    const item = makeItem({ 'System.Title': 'Req' }, [
+      { rel: 'System.LinkTypes.Hierarchy-Forward', url: ADO_URL(5), attributes: {} },
+    ]);
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
+    expect(f.status).toBe('warn');
+    expect(f.links).toEqual([]);
+  });
+
+  it('empty relations array → links === []', () => {
+    const item = makeItem({ 'System.Title': 'Req' }, []);
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
+    expect(f.links).toEqual([]);
+  });
+
+  it('relations not fetched → links is undefined', () => {
+    const item = makeItem({ 'System.Title': 'Req' }); // no relations property
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
+    expect(f.status).toBe('unknown');
+    expect(f.links).toBeUndefined();
+  });
+
+  it('url does not contain workItems path → targetId excluded from links', () => {
+    const item = makeItem({ 'System.Title': 'Req' }, [
+      { rel: 'Elisra.CoveredBy-Forward', url: 'https://tfs/wi/7', attributes: {} },
+    ]);
+    const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
+    expect(f.status).toBe('ok');
+    expect(f.links).toEqual([]);
+  });
+});
