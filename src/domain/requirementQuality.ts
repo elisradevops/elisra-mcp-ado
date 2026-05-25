@@ -13,12 +13,18 @@ export type FindingStatus = 'ok' | 'warn' | 'missing' | 'unknown';
 
 export type OverallRisk = 'none' | 'low' | 'medium' | 'high';
 
+export interface TraceabilityLink {
+  rel: string;
+  targetId: number;
+}
+
 export interface AttributeFinding {
   attribute: QualityAttribute;
   status: FindingStatus;
   confidence: ConfidenceLevel;
   confidenceReason: string;
   evidence: string[];
+  links?: TraceabilityLink[];
   limitation?: string;
   recommendation?: string;
 }

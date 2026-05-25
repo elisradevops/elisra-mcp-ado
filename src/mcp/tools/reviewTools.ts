@@ -16,6 +16,7 @@ import { FieldFilterSchema } from './scopeTools.js';
 import { FilterNodeSchema } from '../../domain/fieldFilter.js';
 import { toCompactRecord } from '../../services/workItemService.js';
 import { htmlToText } from '../../utils/htmlToText.js';
+import { parseWorkItemIdFromUrl } from '../../utils/adoUrl.js';
 import type { Logger } from '../../logging/logger.js';
 
 const CONTEXT_ONLY_NOTICE =
@@ -104,12 +105,6 @@ async function resolveAvailableReviewFields(
 
 // ─── Context record helpers ────────────────────────────────────────────────────
 
-function extractRelationTargetId(url: string): number | null {
-  const m = /\/workItems\/(\d+)(?:[/?]|$)/i.exec(url);
-  if (!m) return null;
-  const id = parseInt(m[1], 10);
-  return Number.isFinite(id) ? id : null;
-}
 
 const DESC_MAX_CHARS = 2_000;
 const AC_MAX_CHARS = 500;
@@ -138,7 +133,7 @@ function toContextItem(item: AdoWorkItem): Record<string, unknown> {
 
   if (item.relations) {
     rec['relations'] = item.relations
-      .map((r) => ({ rel: r.rel, targetId: extractRelationTargetId(r.url) }))
+      .map((r) => ({ rel: r.rel, targetId: parseWorkItemIdFromUrl(r.url) }))
       .filter((r) => r.targetId !== null);
   }
 
@@ -152,9 +147,9 @@ function structuralGroupByParent(items: AdoWorkItem[]): Array<{ groupKey: string
   for (const item of items) {
     const parentRel = (item.relations ?? []).find((r) => r.rel === 'System.LinkTypes.Hierarchy-Reverse');
     if (!parentRel) continue;
-    const m = /\/workItems\/(\d+)/i.exec(parentRel.url);
-    if (!m) continue;
-    const key = `parent:${m[1]}`;
+    const parentId = parseWorkItemIdFromUrl(parentRel.url);
+    if (parentId === null) continue;
+    const key = `parent:${parentId}`;
     if (!map.has(key)) map.set(key, []);
     map.get(key)!.push(item.id);
   }
@@ -275,7 +270,9 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
     'Resolves a scope, fetches ONE PAGE of work items with their fields, and returns a compact evidence packet. ' +
     'To analyze the full scope, iterate: call the tool, read items[], if pageInfo.isComplete=false call again with cursor=pageInfo.nextCursor, accumulate items, repeat until isComplete=true. Never reason about items you have not yet received. ' +
     'Use responseMode="overview" to get counts and ID list only without fetching item bodies. ' +
-    'Set includeRelations=true to fetch traceability links — omit it (default false) if you get 404 errors on batch fetch.',
+    'TRACEABILITY: set includeRelations=true to populate items[].relations (each entry has rel and targetId). ' +
+    'When false (default), relations are not fetched and no linked target IDs are available. ' +
+    'Cross-scope traceability workflow: (1) call ado_resolve_review_scope with responseMode="ids" for the reference scope (e.g. Customer Requirements area path) and paginate to collect all reference IDs into a local set; (2) call this tool with includeRelations=true for the subject scope (e.g. System Requirements); (3) for each item, filter items[].relations to those whose rel contains the traceability token (e.g. "CoveredBy"), check whether their targetId is in the reference set — the server exposes raw link data, the agent applies the rule.',
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
@@ -287,7 +284,9 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       pageSize: z.number().int().positive().max(200).optional()
         .describe(`Items per page. Default ${config.adoPageSizeDefault}, max ${config.adoPageSizeMax}.`),
       includeRelations: z.boolean().optional().default(false).describe(
-        'Set true to fetch relation links (traceability). Default false — avoids 404 errors on on-prem ADO Server caused by $expand=relations on batch fetch.'
+        'REQUIRED for traceability analysis. When true, each item in items[] includes a relations[] array where each entry has {rel, targetId} — use targetId to join across scopes. ' +
+        'When false (default), relations are not fetched and no linked target IDs are available. ' +
+        'On on-prem ADO Server 2018, $expand=relations on batch fetch returns 404 — set to false and omit traceability analysis in that case.'
       ),
       extraFields: z.array(z.string()).optional().describe(
         'Additional field reference names to fetch (e.g. Custom.SPAWBS, Custom.SubModule). ' +
@@ -421,7 +420,10 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
     'Tip: add a fieldFilters source with System.WorkItemType IN ["Requirement","Feature"] to scope to requirement types. ' +
     'To analyze the full scope, iterate: call the tool, read items[], if pageInfo.isComplete=false call again with cursor=pageInfo.nextCursor, accumulate items, repeat until isComplete=true. Never reason about items you have not yet received. ' +
     'Use responseMode="overview" to get counts and ID list only without fetching item bodies. ' +
-    'The LLM applies its requirement review rules (from the system prompt, Knowledge/RAG, and/or user prompt) to the returned items.',
+    'The LLM applies its requirement review rules (from the system prompt, Knowledge/RAG, and/or user prompt) to the returned items. ' +
+    'TRACEABILITY: set includeRelations=true to populate items[].relations (each entry has rel and targetId). ' +
+    'When false (default), relations are not fetched and no linked target IDs are available. ' +
+    'Cross-scope traceability workflow: (1) call ado_resolve_review_scope with responseMode="ids" for the reference scope (e.g. Customer Requirements area path) and paginate to collect all reference IDs into a local set; (2) call this tool with includeRelations=true for the subject scope (e.g. System Requirements); (3) for each item, filter items[].relations to those whose rel contains the traceability token (e.g. "CoveredBy"), check whether their targetId is in the reference set — the server exposes raw link data, the agent applies the rule.',
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
@@ -433,7 +435,9 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       pageSize: z.number().int().positive().max(200).optional()
         .describe(`Items per page. Default ${config.adoPageSizeDefault}, max ${config.adoPageSizeMax}.`),
       includeRelations: z.boolean().optional().default(false).describe(
-        'Set true to fetch relation links (traceability). Default false — avoids 404 errors on on-prem ADO Server caused by $expand=relations on batch fetch.'
+        'REQUIRED for traceability analysis. When true, each item in items[] includes a relations[] array where each entry has {rel, targetId} — use targetId to join across scopes. ' +
+        'When false (default), relations are not fetched and no linked target IDs are available. ' +
+        'On on-prem ADO Server 2018, $expand=relations on batch fetch returns 404 — set to false and omit traceability analysis in that case.'
       ),
       extraFields: z.array(z.string()).optional().describe(
         'Additional field reference names to fetch (e.g. Custom.SPAWBS, Custom.SubModule). ' +

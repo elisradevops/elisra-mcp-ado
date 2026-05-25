@@ -1,8 +1,9 @@
 import type { AdoWorkItem } from '../types/ado.js';
-import type { AttributeFinding, ReviewFinding } from '../domain/requirementQuality.js';
+import type { AttributeFinding, ReviewFinding, TraceabilityLink } from '../domain/requirementQuality.js';
 import { computeOverallRisk } from '../domain/requirementQuality.js';
-import { findVagueTerms, findRiskTerms, countShall } from '../domain/lexicon.js';
+import { findVagueTerms, findRiskTerms } from '../domain/lexicon.js';
 import { htmlToText } from '../utils/htmlToText.js';
+import { parseWorkItemIdFromUrl } from '../utils/adoUrl.js';
 
 // Fields that must be fetched for a complete review
 export const REVIEW_FIELDS = [
@@ -79,7 +80,8 @@ function reviewSingular(item: AdoWorkItem): AttributeFinding {
   const description = fieldText(item, 'System.Description');
   const title = fieldText(item, 'System.Title');
 
-  const shallCount = countShall(description) + countShall(title);
+  const combinedLower = `${title} ${description}`.toLowerCase();
+  const shallCount = (combinedLower.match(/\bshall\b/g) ?? []).length;
 
   if (shallCount > 3) {
     return {
@@ -93,8 +95,7 @@ function reviewSingular(item: AdoWorkItem): AttributeFinding {
   }
 
   // Check for "and shall" pattern — strong signal of merged requirements
-  const combined = `${title} ${description}`.toLowerCase();
-  if (/\bshall\b.{1,200}\bshall\b/s.test(combined) && shallCount >= 2) {
+  if (/\bshall\b.{1,200}\bshall\b/s.test(combinedLower) && shallCount >= 2) {
     return {
       attribute: 'singular',
       status: 'warn',
@@ -155,30 +156,59 @@ function reviewVerifiable(item: AdoWorkItem): AttributeFinding {
 }
 
 function reviewTraceable(item: AdoWorkItem, tokens: readonly string[]): AttributeFinding {
-  const traceability = hasTraceabilityLink(item, tokens);
-
-  if (traceability === null) {
+  if (!item.relations) {
     return {
       attribute: 'traceable',
       status: 'unknown',
       confidence: 'low',
       confidenceReason: 'Relations were not fetched for this work item.',
       evidence: [],
-      limitation: 'Re-run with expand=relations to evaluate traceability.',
+      limitation: 'Re-run with includeRelations=true to evaluate traceability.',
     };
   }
 
-  if (traceability) {
-    const links = (item.relations ?? [])
-      .filter((r) => tokens.some((t) => r.rel.includes(t)))
-      .map((r) => r.rel);
+  const matchedRelations = item.relations.filter((r) =>
+    tokens.some((t) => r.rel.includes(t))
+  );
 
+  // Parse and dedup links; relations with unparsable URLs are captured as evidence-only entries
+  const seen = new Set<string>();
+  const links: TraceabilityLink[] = [];
+  const evidenceLines: string[] = [];
+
+  for (const r of matchedRelations) {
+    const targetId = r.url ? parseWorkItemIdFromUrl(r.url) : null;
+    const key = targetId !== null ? `${r.rel}#${targetId}` : `${r.rel}#${r.url ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (targetId !== null) {
+      links.push({ rel: r.rel, targetId });
+      evidenceLines.push(`Link: ${r.rel} → #${targetId}`);
+    } else {
+      evidenceLines.push(`Link: ${r.rel}`);
+    }
+  }
+
+  if (links.length > 0) {
     return {
       attribute: 'traceable',
       status: 'ok',
       confidence: 'high',
       confidenceReason: 'At least one traceability link (Affects, CoveredBy, TestedBy) exists — deterministic.',
-      evidence: [...new Set(links)].map((r) => `Link: ${r}`),
+      evidence: evidenceLines,
+      links,
+    };
+  }
+
+  if (matchedRelations.length > 0) {
+    return {
+      attribute: 'traceable',
+      status: 'warn',
+      confidence: 'medium',
+      confidenceReason: 'Traceability relations present but target IDs unparseable.',
+      evidence: evidenceLines,
+      links: [],
+      limitation: 'Relation URLs did not match /workItems/<id> pattern.',
     };
   }
 
@@ -188,6 +218,7 @@ function reviewTraceable(item: AdoWorkItem, tokens: readonly string[]): Attribut
     confidence: 'high',
     confidenceReason: 'No traceability links (Affects, CoveredBy, TestedBy) found — deterministic.',
     evidence: [],
+    links: [],
     recommendation: 'Add traceability links to parent requirements, covering tests, or affected items.',
   };
 }
