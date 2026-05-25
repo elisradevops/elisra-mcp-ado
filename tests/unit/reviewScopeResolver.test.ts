@@ -203,12 +203,45 @@ describe('ReviewScopeResolver — ids source', () => {
     await expect(resolver.resolve(scope)).rejects.toThrow('no valid work item IDs');
   });
 
-  it('does not require project', async () => {
-    const resolver = makeResolver(makeWiqlClient());
+  it('does not require project (returns IDs directly with advisory warning)', async () => {
+    const client = makeWiqlClient();
+    const resolver = makeResolver(client);
     const scope: ReviewScope = { source: { type: 'ids', ids: [42] } };
     const result = await resolver.resolve(scope);
     expect(result.ids).toEqual([42]);
     expect(result.project).toBeUndefined();
+    expect(client.execute).not.toHaveBeenCalled();
+    expect(result.warnings.some((w) => w.toLowerCase().includes('no project'))).toBe(true);
+  });
+
+  it('executes WIQL and returns ADO-validated IDs when project is provided', async () => {
+    const client = makeWiqlClient([1, 2]); // ADO returns only [1, 2] — excludes 9999
+    const resolver = makeResolver(client);
+    const scope: ReviewScope = {
+      project: 'TestProject',
+      auth: AUTH,
+      source: { type: 'ids', ids: [1, 2, 9999] },
+    };
+    const result = await resolver.resolve(scope);
+    expect(client.execute).toHaveBeenCalledOnce();
+    const call = (client.execute as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.wiql).toContain('[System.Id] IN (1, 2, 9999)');
+    expect(result.ids).toEqual([1, 2]); // 9999 excluded by ADO
+    expect(result.project).toBe('TestProject');
+    expect(result.totalMatched).toBe(2);
+  });
+
+  it('emits warning for IDs excluded by ADO (cross-project or deleted)', async () => {
+    const client = makeWiqlClient([1, 2]); // ADO silently excludes 9999
+    const resolver = makeResolver(client);
+    const scope: ReviewScope = {
+      project: 'TestProject',
+      auth: AUTH,
+      source: { type: 'ids', ids: [1, 2, 9999] },
+    };
+    const result = await resolver.resolve(scope);
+    const excludedWarning = result.warnings.find((w) => w.includes('9999'));
+    expect(excludedWarning).toBeDefined();
   });
 });
 
@@ -313,29 +346,72 @@ describe('ReviewScopeResolver — fieldFilters source', () => {
 
 // ─── linkedItems source ───────────────────────────────────────────────────────
 
+const SCOPE_FILTER = {
+  kind: 'condition' as const,
+  field: 'System.AreaPath',
+  operator: 'UNDER' as const,
+  value: 'TestProject\\System Requirement',
+};
+
+const RELATION_TYPES = ['System.LinkTypes.Hierarchy-Forward'];
+
+function makeLinkedItemsWiqlClient(validRootIds: number[], targetIdsPerHop: number[][]): IWiqlClient {
+  let hopIndex = 0;
+  return {
+    execute: vi.fn().mockImplementation(async (o: { wiql: string }): Promise<WiqlResult> => {
+      // Root validation is a flat WorkItems query; BFS hops are WorkItemLinks queries.
+      if (o.wiql.includes('FROM WorkItems')) {
+        return {
+          ids: validRootIds,
+          sourceIds: validRootIds,
+          targetIds: [],
+          totalMatched: validRootIds.length,
+          queryType: 'flat',
+          wiqlMaybeTruncated: false,
+        };
+      }
+      const targetIds = targetIdsPerHop[hopIndex] ?? [];
+      hopIndex++;
+      return {
+        ids: targetIds,
+        sourceIds: [],
+        targetIds,
+        totalMatched: targetIds.length,
+        queryType: 'tree',
+        wiqlMaybeTruncated: false,
+      };
+    }),
+  };
+}
+
 describe('ReviewScopeResolver — linkedItems source', () => {
-  it('throws CONFIGURATION_ERROR when workItemService not injected', async () => {
-    const resolver = makeResolver(makeWiqlClient()); // no workItemService
-    const scope: ReviewScope = { source: { type: 'linkedItems', rootId: 123 } };
-    await expect(resolver.resolve(scope)).rejects.toMatchObject({ code: 'CONFIGURATION_ERROR' });
+  it('throws PROJECT_REQUIRED when no project provided', async () => {
+    const resolver = makeResolver(makeLinkedItemsWiqlClient([123], [[]]));
+    const scope: ReviewScope = {
+      source: { type: 'linkedItems', rootIds: [123], relationTypes: RELATION_TYPES, scopeFilter: SCOPE_FILTER },
+    };
+    await expect(resolver.resolve(scope)).rejects.toMatchObject({ code: 'PROJECT_REQUIRED' });
   });
 
-  it('includes root ID in result', async () => {
-    const wis = makeWorkItemService([[makeItem(100, [])]]);
-    const resolver = makeResolver(makeWiqlClient(), {}, wis);
-    const scope: ReviewScope = { source: { type: 'linkedItems', rootId: 100, depth: 1 } };
+  it('includes root IDs in result', async () => {
+    const resolver = makeResolver(makeLinkedItemsWiqlClient([100, 101], [[]]));
+    const scope: ReviewScope = {
+      project: 'TestProject',
+      auth: AUTH,
+      source: { type: 'linkedItems', rootIds: [100, 101], relationTypes: RELATION_TYPES, scopeFilter: SCOPE_FILTER, depth: 1 },
+    };
     const result = await resolver.resolve(scope);
     expect(result.ids).toContain(100);
+    expect(result.ids).toContain(101);
   });
 
-  it('traverses direct links (depth=1)', async () => {
-    const root = makeItem(1, [
-      { rel: 'System.LinkTypes.Hierarchy-Forward', url: 'https://tfs/tfs/Coll/_apis/wit/workItems/2', attributes: {} },
-      { rel: 'System.LinkTypes.Hierarchy-Forward', url: 'https://tfs/tfs/Coll/_apis/wit/workItems/3', attributes: {} },
-    ]);
-    const wis = makeWorkItemService([[root]]);
-    const resolver = makeResolver(makeWiqlClient(), {}, wis);
-    const scope: ReviewScope = { source: { type: 'linkedItems', rootId: 1, depth: 1 } };
+  it('adds WIQL-returned target IDs to result (depth=1)', async () => {
+    const resolver = makeResolver(makeLinkedItemsWiqlClient([1], [[2, 3]]));
+    const scope: ReviewScope = {
+      project: 'TestProject',
+      auth: AUTH,
+      source: { type: 'linkedItems', rootIds: [1], relationTypes: RELATION_TYPES, scopeFilter: SCOPE_FILTER, depth: 1 },
+    };
     const result = await resolver.resolve(scope);
     expect(result.ids).toContain(1);
     expect(result.ids).toContain(2);
@@ -343,97 +419,85 @@ describe('ReviewScopeResolver — linkedItems source', () => {
     expect(result.totalMatched).toBe(3);
   });
 
-  it('skips non-WI relation types (ArtifactLink, Hyperlink)', async () => {
-    const root = makeItem(1, [
-      { rel: 'ArtifactLink', url: 'https://tfs/tfs/Coll/_apis/wit/workItems/99', attributes: {} },
-      { rel: 'Hyperlink', url: 'https://example.com', attributes: {} },
-      { rel: 'System.LinkTypes.Related', url: 'https://tfs/tfs/Coll/_apis/wit/workItems/2', attributes: {} },
-    ]);
-    const wis = makeWorkItemService([[root]]);
-    const resolver = makeResolver(makeWiqlClient(), {}, wis);
-    const scope: ReviewScope = { source: { type: 'linkedItems', rootId: 1, depth: 1 } };
+  it('ADO enforces scopeFilter — out-of-scope targets absent from targetIds are excluded', async () => {
+    // ADO returns only in-scope targets; out-of-scope item (e.g. 245985) never appears in targetIds.
+    const resolver = makeResolver(makeLinkedItemsWiqlClient([1], [[2]])); // item 99 NOT in targetIds
+    const scope: ReviewScope = {
+      project: 'TestProject',
+      auth: AUTH,
+      source: { type: 'linkedItems', rootIds: [1], relationTypes: RELATION_TYPES, scopeFilter: SCOPE_FILTER, depth: 1 },
+    };
     const result = await resolver.resolve(scope);
     expect(result.ids).not.toContain(99);
     expect(result.ids).toContain(2);
   });
 
-  it('filters by relationTypes when specified', async () => {
-    const root = makeItem(1, [
-      { rel: 'System.LinkTypes.Hierarchy-Forward', url: 'https://tfs/tfs/Coll/_apis/wit/workItems/2', attributes: {} },
-      { rel: 'System.LinkTypes.Related', url: 'https://tfs/tfs/Coll/_apis/wit/workItems/3', attributes: {} },
-    ]);
-    const wis = makeWorkItemService([[root]]);
-    const resolver = makeResolver(makeWiqlClient(), {}, wis);
+  it('excludes root IDs that fail scopeFilter and emits a warning', async () => {
+    // rootIds=[1, 999]; validation query returns only [1] (999 is out-of-scope).
+    const resolver = makeResolver(makeLinkedItemsWiqlClient([1], [[2]]));
     const scope: ReviewScope = {
-      source: {
-        type: 'linkedItems',
-        rootId: 1,
-        depth: 1,
-        relationTypes: ['System.LinkTypes.Hierarchy-Forward'],
-      },
+      project: 'TestProject',
+      auth: AUTH,
+      source: { type: 'linkedItems', rootIds: [1, 999], relationTypes: RELATION_TYPES, scopeFilter: SCOPE_FILTER, depth: 1 },
     };
     const result = await resolver.resolve(scope);
-    expect(result.ids).toContain(2);
-    expect(result.ids).not.toContain(3);
+    expect(result.ids).not.toContain(999);
+    expect(result.ids).toContain(1);
+    expect(result.warnings.some((w) => w.includes('999'))).toBe(true);
   });
 
-  it('does not revisit already-visited IDs across levels', async () => {
-    // Level 0: root=1 → links to 2
-    // Level 1: item=2 → links back to 1 (already visited) and to 3
-    const root = makeItem(1, [
-      { rel: 'System.LinkTypes.Related', url: 'https://tfs/tfs/Coll/_apis/wit/workItems/2', attributes: {} },
-    ]);
-    const item2 = makeItem(2, [
-      { rel: 'System.LinkTypes.Related', url: 'https://tfs/tfs/Coll/_apis/wit/workItems/1', attributes: {} },
-      { rel: 'System.LinkTypes.Related', url: 'https://tfs/tfs/Coll/_apis/wit/workItems/3', attributes: {} },
-    ]);
-    const wis = makeWorkItemService([[root], [item2]]);
-    const resolver = makeResolver(makeWiqlClient(), {}, wis);
-    const scope: ReviewScope = { source: { type: 'linkedItems', rootId: 1, depth: 2 } };
+  it('does not revisit already-visited IDs across levels (cycle avoidance)', async () => {
+    // Hop 0: root=1 → targets [2]
+    // Hop 1: frontier=[2] → targets [1 (already visited), 3]
+    const wiqlClient = makeLinkedItemsWiqlClient([1], [[2], [1, 3]]);
+    const resolver = makeResolver(wiqlClient);
+    const scope: ReviewScope = {
+      project: 'TestProject',
+      auth: AUTH,
+      source: { type: 'linkedItems', rootIds: [1], relationTypes: RELATION_TYPES, scopeFilter: SCOPE_FILTER, depth: 2 },
+    };
     const result = await resolver.resolve(scope);
     expect(result.ids).toEqual(expect.arrayContaining([1, 2, 3]));
     expect(result.ids).toHaveLength(3); // no duplicates
   });
 
   it('caps depth at 3', async () => {
-    // Chain: 1→2→3→4→5 — with depth=99 we expect only 3 BFS expansions (max depth capped at 3)
-    const mkRel = (id: number) => ({
-      rel: 'System.LinkTypes.Related',
-      url: `https://tfs/tfs/Coll/_apis/wit/workItems/${id}`,
-      attributes: {},
-    });
-    const wis = makeWorkItemService([
-      [makeItem(1, [mkRel(2)])],  // level 0 frontier: [1]
-      [makeItem(2, [mkRel(3)])],  // level 1 frontier: [2]
-      [makeItem(3, [mkRel(4)])],  // level 2 frontier: [3]  ← last allowed (maxDepth=3)
-    ]);
-    const resolver = makeResolver(makeWiqlClient(), {}, wis);
-    const scope: ReviewScope = { source: { type: 'linkedItems', rootId: 1, depth: 99 } };
+    // Chain 1→2→3→4→5 with depth=99, expect only 3 hops executed
+    const wiqlClient = makeLinkedItemsWiqlClient([1], [[2], [3], [4], [5]]);
+    const resolver = makeResolver(wiqlClient);
+    const scope: ReviewScope = {
+      project: 'TestProject',
+      auth: AUTH,
+      source: { type: 'linkedItems', rootIds: [1], relationTypes: RELATION_TYPES, scopeFilter: SCOPE_FILTER, depth: 99 },
+    };
     const result = await resolver.resolve(scope);
-    expect(wis.fetchWithRelations).toHaveBeenCalledTimes(3);
-    expect(result.ids).toContain(4); // discovered at level 2 expansion
-    expect(result.ids).not.toContain(5); // would only appear at level 3, which is beyond cap
+    // 1 root-validation call + 3 BFS hops = 4 total
+    expect(wiqlClient.execute).toHaveBeenCalledTimes(4);
+    expect(result.ids).toContain(4); // discovered at hop 2
+    expect(result.ids).not.toContain(5); // would require hop 3 which is beyond cap
   });
 
   it('emits warning when breadth cap hit', async () => {
-    const relations = Array.from({ length: 150 }, (_, i) => ({
-      rel: 'System.LinkTypes.Related',
-      url: `https://tfs/tfs/Coll/_apis/wit/workItems/${i + 10}`,
-      attributes: {},
-    }));
-    const root = makeItem(1, relations);
-    const wis = makeWorkItemService([[root], []]);
-    const resolver = makeResolver(makeWiqlClient(), {}, wis);
-    const scope: ReviewScope = { source: { type: 'linkedItems', rootId: 1, depth: 2 } };
+    const manyTargets = Array.from({ length: 150 }, (_, i) => i + 10);
+    const wiqlClient = makeLinkedItemsWiqlClient([1], [manyTargets, []]);
+    const resolver = makeResolver(wiqlClient);
+    const scope: ReviewScope = {
+      project: 'TestProject',
+      auth: AUTH,
+      source: { type: 'linkedItems', rootIds: [1], relationTypes: RELATION_TYPES, scopeFilter: SCOPE_FILTER, depth: 2 },
+    };
     const result = await resolver.resolve(scope);
     expect(result.warnings.some((w) => w.includes('capped'))).toBe(true);
     expect(result.ids.length).toBeLessThanOrEqual(101); // root + 100 cap
   });
 
   it('sets sourceType to linkedItems', async () => {
-    const wis = makeWorkItemService([[makeItem(1)]]);
-    const resolver = makeResolver(makeWiqlClient(), {}, wis);
-    const scope: ReviewScope = { source: { type: 'linkedItems', rootId: 1, depth: 1 } };
+    const resolver = makeResolver(makeLinkedItemsWiqlClient([1], [[]]));
+    const scope: ReviewScope = {
+      project: 'TestProject',
+      auth: AUTH,
+      source: { type: 'linkedItems', rootIds: [1], relationTypes: RELATION_TYPES, scopeFilter: SCOPE_FILTER, depth: 1 },
+    };
     const result = await resolver.resolve(scope);
     expect(result.sourceType).toBe('linkedItems');
   });

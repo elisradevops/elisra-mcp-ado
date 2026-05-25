@@ -1,8 +1,23 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 
 export interface SnapshotMeta {
   project: string | undefined;
   sourceType: string;
+  sourceHash?: string;
+}
+
+export function computeSourceHash(project: string | undefined, sourceType: string, sourceArgs: unknown): string {
+  const canonical = JSON.stringify({ p: project ?? null, t: sourceType, s: sourceArgs }, stableReplacer);
+  return createHash('sha256').update(canonical).digest('base64url').slice(0, 16);
+}
+
+function stableReplacer(_key: string, value: unknown): unknown {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))
+    );
+  }
+  return value;
 }
 
 export interface Snapshot {
@@ -65,7 +80,12 @@ export function encodeCursor(snapshotId: string, nextOffset: number): string {
 
 export function decodeCursor(cursor: string): { snapshotId: string; offset: number } | null {
   try {
-    const json = Buffer.from(cursor, 'base64url').toString('utf8');
+    let normalized = cursor.trim();
+    if ((normalized.startsWith('"') && normalized.endsWith('"')) ||
+        (normalized.startsWith("'") && normalized.endsWith("'"))) {
+      normalized = normalized.slice(1, -1);
+    }
+    const json = Buffer.from(normalized, 'base64url').toString('utf8');
     const parsed: unknown = JSON.parse(json);
     if (
       typeof parsed !== 'object' ||

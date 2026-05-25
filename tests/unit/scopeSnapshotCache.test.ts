@@ -3,6 +3,7 @@ import {
   ScopeSnapshotCache,
   encodeCursor,
   decodeCursor,
+  computeSourceHash,
 } from '../../src/services/scopeSnapshotCache.js';
 import type { SnapshotMeta } from '../../src/services/scopeSnapshotCache.js';
 
@@ -147,5 +148,73 @@ describe('encodeCursor + decodeCursor', () => {
 
   it('returns null for empty string', () => {
     expect(decodeCursor('')).toBeNull();
+  });
+
+  it('decodes cursor wrapped in double quotes (LLM echo artifact)', () => {
+    const cursor = encodeCursor('snap-1', 50);
+    const quoted = `"${cursor}"`;
+    const decoded = decodeCursor(quoted);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.snapshotId).toBe('snap-1');
+    expect(decoded!.offset).toBe(50);
+  });
+
+  it("decodes cursor wrapped in single quotes (LLM echo artifact)", () => {
+    const cursor = encodeCursor('snap-2', 100);
+    const quoted = `'${cursor}'`;
+    const decoded = decodeCursor(quoted);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.snapshotId).toBe('snap-2');
+    expect(decoded!.offset).toBe(100);
+  });
+
+  it('decodes cursor with leading/trailing whitespace', () => {
+    const cursor = encodeCursor('snap-3', 25);
+    const padded = `  ${cursor}  `;
+    const decoded = decodeCursor(padded);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.snapshotId).toBe('snap-3');
+    expect(decoded!.offset).toBe(25);
+  });
+});
+
+// ─── computeSourceHash ────────────────────────────────────────────────────────
+
+describe('computeSourceHash', () => {
+  it('returns same hash for identical args', () => {
+    const h1 = computeSourceHash('Proj', 'fieldFilters', { type: 'fieldFilters', filters: [] });
+    const h2 = computeSourceHash('Proj', 'fieldFilters', { type: 'fieldFilters', filters: [] });
+    expect(h1).toBe(h2);
+  });
+
+  it('returns different hash when project differs', () => {
+    const h1 = computeSourceHash('ProjA', 'wiql', { type: 'wiql', wiql: 'SELECT ...' });
+    const h2 = computeSourceHash('ProjB', 'wiql', { type: 'wiql', wiql: 'SELECT ...' });
+    expect(h1).not.toBe(h2);
+  });
+
+  it('returns different hash when sourceType differs', () => {
+    const h1 = computeSourceHash('P', 'wiql', { wiql: 'X' });
+    const h2 = computeSourceHash('P', 'fieldFilters', { wiql: 'X' });
+    expect(h1).not.toBe(h2);
+  });
+
+  it('returns different hash when source args differ', () => {
+    const h1 = computeSourceHash('P', 'wiql', { type: 'wiql', wiql: 'SELECT 1' });
+    const h2 = computeSourceHash('P', 'wiql', { type: 'wiql', wiql: 'SELECT 2' });
+    expect(h1).not.toBe(h2);
+  });
+
+  it('produces stable hash regardless of object key order', () => {
+    const h1 = computeSourceHash('P', 'fieldFilters', { b: 2, a: 1 });
+    const h2 = computeSourceHash('P', 'fieldFilters', { a: 1, b: 2 });
+    expect(h1).toBe(h2);
+  });
+
+  it('returns a 16-character base64url string', () => {
+    const h = computeSourceHash('P', 'wiql', {});
+    expect(typeof h).toBe('string');
+    expect(h).toHaveLength(16);
+    expect(/^[A-Za-z0-9_-]+$/.test(h)).toBe(true);
   });
 });

@@ -83,6 +83,10 @@ export function buildSimulationDeps(opts: SimulationDepsOptions): {
     discover: vi.fn().mockRejectedValue(new Error('mock — no field discovery')),
   };
 
+  const metadataValidator = {
+    validate: vi.fn().mockResolvedValue({ ok: true }),
+  };
+
   const deps: ToolDeps = {
     config,
     logger,
@@ -92,6 +96,8 @@ export function buildSimulationDeps(opts: SimulationDepsOptions): {
     workItemService,
     fieldDiscoveryService: fieldDiscoveryService as never,
     linkTypeDiscoveryService: null as never,
+    workItemTypesClient: null as never,
+    metadataValidator: metadataValidator as never,
     reviewScopeResolver,
     requirementReviewService: new RequirementReviewService(),
     contextPacketService: null as never,

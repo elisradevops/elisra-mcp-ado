@@ -37,8 +37,9 @@ export interface LinkQuerySource {
 
 export interface LinkedItemsSource {
   type: 'linkedItems';
-  rootId: number;
-  relationTypes?: string[];
+  rootIds: number[];
+  relationTypes: string[];
+  scopeFilter: FilterNode;
   depth?: number;
 }
 
@@ -73,7 +74,7 @@ export type ReviewPreset =
 export interface ReviewScope {
   project?: string;
   auth?: AuthContext;
-  source: ReviewSource;
+  source?: ReviewSource;
   preset?: ReviewPreset;
 }
 
