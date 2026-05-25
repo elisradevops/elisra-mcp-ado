@@ -7,7 +7,8 @@ import type { ReviewScope } from '../../domain/reviewScope.js';
 import { groupByFields, COMPACT_FIELDS } from '../../services/workItemService.js';
 import { OperatorSchema, FilterValueSchema, FilterNodeSchema } from '../../domain/fieldFilter.js';
 import { ANTI_HALLUCINATION_BANNER } from '../../domain/responseModes.js';
-import { encodeCursor, decodeCursor } from '../../services/scopeSnapshotCache.js';
+import { encodeCursor, decodeCursor, computeSourceHash } from '../../services/scopeSnapshotCache.js';
+import { extractMetadataRefs } from '../../services/metadataValidator.js';
 
 export const FieldFilterSchema = z.object({
   field: z.string().describe('Field reference name (e.g. System.State, Custom.CustomerID)'),
@@ -69,9 +70,16 @@ const SourceSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('linkedItems'),
-    rootId: z.number().int().positive().describe('Root work item ID to traverse from'),
-    relationTypes: z.array(z.string()).optional().describe(
-      'Relation type filter (e.g. System.LinkTypes.Hierarchy-Forward). Omit for all WI relation types.'
+    rootIds: z.array(z.number().int().positive()).min(1).max(200).describe('Root work item IDs to traverse from'),
+    relationTypes: z.array(z.string()).min(1).describe(
+      'Required relation type whitelist (e.g. Elisra.CoveredBy-Forward). Restricts traversal to these types only. ' +
+      'Common types: System.LinkTypes.Hierarchy-Forward, System.LinkTypes.Hierarchy-Reverse, ' +
+      'System.LinkTypes.Related, Elisra.CoveredBy-Forward, Elisra.CoveredBy-Reverse.'
+    ),
+    scopeFilter: FilterNodeSchema.describe(
+      'Required scope filter applied per hop via ADO WIQL WorkItemLinks query. ' +
+      'Constrains which linked targets enter the result (e.g. System.AreaPath UNDER "ProjectX\\\\System Requirement"). ' +
+      'Prevents out-of-scope items from entering the result set.'
     ),
     depth: z.number().int().min(1).max(3).optional().default(1).describe(
       'BFS depth. 1 = direct links only. Max 3.'
@@ -90,7 +98,7 @@ const ValidatedSourceSchema = SourceSchema.superRefine((v, ctx) => {
 });
 
 export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
-  const { config, logger, wiqlClient, workItemService, reviewScopeResolver, scopeSnapshotCache } = deps;
+  const { config, logger, wiqlClient, workItemService, reviewScopeResolver, scopeSnapshotCache, metadataValidator } = deps;
 
   // ── ado_resolve_review_scope ────────────────────────────────────────────────
 
@@ -100,12 +108,20 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
     'Always call this BEFORE calling any review tool to confirm scope and check totalMatched. ' +
     'Default responseMode is "overview" (counts + incomplete preview IDs only — do NOT use preview IDs for analysis). ' +
     'Use responseMode="ids" to retrieve the full ID list one page at a time via cursor pagination. ' +
-    'To get all IDs: call with responseMode="ids", if pageInfo.isComplete=false call again with cursor=pageInfo.nextCursor, repeat until isComplete=true. ' +
-    'Never reason about IDs you have not yet received.',
+    'Pagination: first call passes {pat, project, source, responseMode="ids", pageSize?}. ' +
+    'Follow-up calls pass ONLY {pat, project, cursor} — do NOT re-send source. ' +
+    'Repeat until pageInfo.isComplete=true. Never reason about IDs you have not yet received. ' +
+    'Source types: wiql (raw WIQL flat query), ids (explicit ID list — validated via WIQL), ' +
+    'fieldFilters (structured filters compiled to WIQL), ' +
+    'linkQuery (WIQL WorkItemLinks single-hop, preferred for traversal), ' +
+    'linkedItems (bounded BFS — REQUIRED fields: rootIds, relationTypes, scopeFilter; ' +
+    'each hop is a WIQL WorkItemLinks query; scopeFilter prevents out-of-scope items), ' +
+    'savedQuery (saved query id/path). ' +
+    'Validation: all referenced fields, work item types, and link types are validated against ADO metadata before any WIQL runs.',
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name. Required for wiql and fieldFilters sources.'),
-      source: ValidatedSourceSchema,
+      source: ValidatedSourceSchema.optional(),
       responseMode: z.enum(['overview', 'ids']).optional().default('overview'),
       cursor: z.string().optional().describe(
         'Pagination cursor from a previous call\'s pageInfo.nextCursor. Only used in responseMode="ids". Omit for first page.'
@@ -115,7 +131,28 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
       ),
     },
     async ({ pat, project, source, responseMode, cursor, pageSize }) => {
+      if (!cursor && !source) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'MISSING_SOURCE', message: 'source is required for the first call. Follow-up calls pass only {cursor, pat, project}.' }) }],
+          isError: true,
+        };
+      }
       const auth = resolveAuthContext(config, pat);
+
+      if (source && !cursor) {
+        const metaRefs = extractMetadataRefs(source);
+        metaRefs.project = project;
+        if (metaRefs.fields.length > 0 || metaRefs.workItemTypes.length > 0 || metaRefs.linkTypes.length > 0) {
+          const metaResult = await metadataValidator.validate(metaRefs, auth);
+          if (!metaResult.ok) {
+            return {
+              content: [{ type: 'text' as const, text: JSON.stringify({ error: metaResult.error, unknown: metaResult.unknown, hint: metaResult.hint }) }],
+              isError: true,
+            };
+          }
+        }
+      }
+
       const scope: ReviewScope = { project, auth, source };
 
       try {
@@ -133,9 +170,11 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
 
           if (!cursor) {
             const resolution = await reviewScopeResolver.resolve(scope);
+            const sourceHash = source ? computeSourceHash(resolution.project, resolution.sourceType, source) : undefined;
             snapshotId = scopeSnapshotCache.put(resolution.ids, {
               project: resolution.project,
               sourceType: resolution.sourceType,
+              sourceHash,
             });
             allIds = resolution.ids;
             totalMatched = resolution.totalMatched;
@@ -147,6 +186,14 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
           } else {
             const decoded = decodeCursor(cursor);
             if (!decoded) {
+              logger.warn({
+                cursorLength: cursor.length,
+                cursorPrefix: cursor.slice(0, 8),
+                cursorSuffix: cursor.slice(-4),
+                hasWhitespace: /\s/.test(cursor),
+                hasQuotes: cursor.includes('"') || cursor.includes("'"),
+                looksBase64url: /^[A-Za-z0-9_-]+$/.test(cursor),
+              }, 'CURSOR_INVALID — decodeCursor returned null');
               return {
                 content: [{ type: 'text' as const, text: JSON.stringify({ error: 'CURSOR_INVALID', message: 'Cursor is malformed. Restart pagination by calling without cursor.' }) }],
                 isError: true,
@@ -158,6 +205,15 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
                 content: [{ type: 'text' as const, text: JSON.stringify({ error: 'CURSOR_EXPIRED', message: 'Cursor has expired or been evicted. Restart pagination by calling without cursor.' }) }],
                 isError: true,
               };
+            }
+            if (source && snapshot.meta.sourceHash) {
+              const callerHash = computeSourceHash(snapshot.meta.project, snapshot.meta.sourceType, source);
+              if (callerHash !== snapshot.meta.sourceHash) {
+                return {
+                  content: [{ type: 'text' as const, text: JSON.stringify({ error: 'CURSOR_SCOPE_MISMATCH', message: 'Cursor was issued for a different scope. Restart pagination without cursor for this source.' }) }],
+                  isError: true,
+                };
+              }
             }
             allIds = snapshot.ids;
             totalMatched = snapshot.ids.length;

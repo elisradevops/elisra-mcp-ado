@@ -5,11 +5,13 @@ import { AdoClient } from '../../ado/adoClient.js';
 import { ProjectsClient } from '../../ado/projectsClient.js';
 import { FieldsClient } from '../../ado/fieldsClient.js';
 import { LinkTypesClient } from '../../ado/linkTypesClient.js';
+import { WorkItemTypesClient } from '../../ado/workItemTypesClient.js';
 import { WiqlClient } from '../../ado/wiqlClient.js';
 import { WorkItemsClient } from '../../ado/workItemsClient.js';
 import { QueriesClient } from '../../ado/queriesClient.js';
 import { FieldDiscoveryService } from '../../services/fieldDiscoveryService.js';
 import { LinkTypeDiscoveryService } from '../../services/linkTypeDiscoveryService.js';
+import { MetadataValidator } from '../../services/metadataValidator.js';
 import { WorkItemService } from '../../services/workItemService.js';
 import { ReviewScopeResolver } from '../../services/reviewScopeResolver.js';
 import { RequirementReviewService } from '../../services/requirementReviewService.js';
@@ -35,6 +37,8 @@ export interface ToolDeps {
   workItemService: WorkItemService;
   fieldDiscoveryService: FieldDiscoveryService;
   linkTypeDiscoveryService: LinkTypeDiscoveryService;
+  workItemTypesClient: WorkItemTypesClient;
+  metadataValidator: MetadataValidator;
   reviewScopeResolver: ReviewScopeResolver;
   requirementReviewService: RequirementReviewService;
   contextPacketService: ContextPacketService;
@@ -51,8 +55,10 @@ export function buildToolDeps(config: AppConfig, logger: Logger): ToolDeps {
   const wiqlClient = new WiqlClient(adoClient, config, logger);
   const workItemsClient = new WorkItemsClient(adoClient, config, logger);
   const queriesClient = new QueriesClient(adoClient, config);
+  const workItemTypesClient = new WorkItemTypesClient(adoClient, config);
   const fieldDiscoveryService = new FieldDiscoveryService(fieldsClient);
   const linkTypeDiscoveryService = new LinkTypeDiscoveryService(linkTypesClient);
+  const metadataValidator = new MetadataValidator(fieldsClient, linkTypesClient, workItemTypesClient);
   const workItemService = new WorkItemService(workItemsClient, config);
   const reviewScopeResolver = new ReviewScopeResolver(wiqlClient, config, logger, workItemService, queriesClient);
   const requirementReviewService = new RequirementReviewService();
@@ -70,6 +76,8 @@ export function buildToolDeps(config: AppConfig, logger: Logger): ToolDeps {
     workItemService,
     fieldDiscoveryService,
     linkTypeDiscoveryService,
+    workItemTypesClient,
+    metadataValidator,
     reviewScopeResolver,
     requirementReviewService,
     contextPacketService,

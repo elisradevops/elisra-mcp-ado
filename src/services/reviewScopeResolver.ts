@@ -7,7 +7,6 @@ import type { ReviewScope, ScopeResolution } from '../domain/reviewScope.js';
 import type { FieldFilter, FilterNode, OrderBy } from '../domain/fieldFilter.js';
 import type { WorkItemService } from './workItemService.js';
 import { createDefaultCompiler } from '../domain/genericWiqlCompiler.js';
-import { isWorkItemRel } from '../domain/adoLinkTypes.js';
 
 // GUARDRAIL: BFS depth and breadth caps prevent unbounded ADO API calls. See docs/performance.md.
 const MAX_DEPTH = 3;
@@ -26,12 +25,16 @@ export class ReviewScopeResolver {
     const auth = overrideAuth ?? scope.auth ?? this.noAuth();
     const { source } = scope;
 
+    if (!source) {
+      throw new AdoScopeError('ReviewScope.source is required for resolve()', 'MISSING_SOURCE');
+    }
+
     switch (source.type) {
       case 'wiql':
         return this.resolveWiql(scope.project, source.wiql, auth);
 
       case 'ids':
-        return this.resolveIds(source.ids);
+        return this.resolveIdsViaWiql(scope.project, source.ids, auth);
 
       case 'fieldFilters':
         return this.resolveFieldFilters(scope.project, source.filters, source.filterTree, source.orderBy, source.asOf, auth);
@@ -40,7 +43,7 @@ export class ReviewScopeResolver {
         return this.resolveLinkQuery(scope.project, source, auth);
 
       case 'linkedItems':
-        return this.resolveLinkedItems(scope.project, source.rootId, source.relationTypes, source.depth, auth);
+        return this.resolveLinkedItems(scope.project, source.rootIds, source.relationTypes, source.scopeFilter, source.depth, auth);
 
       case 'savedQuery':
         return this.resolveSavedQuery(scope.project, source.queryPathOrId, auth);
@@ -82,9 +85,13 @@ export class ReviewScopeResolver {
     return resolution;
   }
 
-  // ─── IDs source ─────────────────────────────────────────────────────────────
+  // ─── IDs source (WIQL-backed) ────────────────────────────────────────────────
 
-  private resolveIds(ids: number[]): ScopeResolution {
+  private async resolveIdsViaWiql(
+    project: string | undefined,
+    ids: number[],
+    auth: AuthContext
+  ): Promise<ScopeResolution> {
     const warnings: string[] = [];
     const valid: number[] = [];
 
@@ -113,12 +120,43 @@ export class ReviewScopeResolver {
       warnings.push(`Removed ${valid.length - deduped.length} duplicate work item ID(s).`);
     }
 
-    return {
+    if (!project) {
+      // No project — return deduped IDs directly; ADO validation not possible without project context.
+      warnings.push('No project provided for ids source — IDs returned without ADO validation.');
+      return {
+        sourceType: 'ids',
+        ids: deduped,
+        totalMatched: deduped.length,
+        warnings,
+      };
+    }
+
+    // Compile to WIQL so ADO validates and filters out cross-project / deleted IDs.
+    const idList = deduped.join(', ');
+    const wiql = `SELECT [System.Id] FROM WorkItems WHERE [System.Id] IN (${idList})`;
+
+    this.logger.debug({ project, sourceType: 'ids', count: deduped.length }, 'Resolving ids scope via WIQL');
+
+    const result = await this.wiqlClient.execute({ project, wiql, auth });
+
+    const dropped = deduped.filter((id) => !result.ids.includes(id));
+    if (dropped.length > 0) {
+      warnings.push(`ADO excluded ${dropped.length} ID(s) not found in project "${project}": ${dropped.join(', ')}.`);
+    }
+
+    const resolution: ScopeResolution = {
+      project,
       sourceType: 'ids',
-      ids: deduped,
-      totalMatched: deduped.length,
+      ids: result.ids,
+      totalMatched: result.ids.length,
       warnings,
     };
+
+    if (this.config.adoEnableDebugOutput) {
+      resolution.debugWiql = wiql;
+    }
+
+    return resolution;
   }
 
   // ─── FieldFilters source ────────────────────────────────────────────────────
@@ -267,71 +305,105 @@ export class ReviewScopeResolver {
     return resolution;
   }
 
-  // ─── LinkedItems source ──────────────────────────────────────────────────────
+  // ─── LinkedItems source (per-hop WIQL) ──────────────────────────────────────
 
   private async resolveLinkedItems(
     project: string | undefined,
-    rootId: number,
-    relationTypes: string[] | undefined,
+    rootIds: number[],
+    relationTypes: string[],
+    scopeFilter: FilterNode,
     depth: number | undefined,
     auth: AuthContext
   ): Promise<ScopeResolution> {
-    if (!this.workItemService) {
-      throw new AdoScopeError(
-        'linkedItems source requires WorkItemService to be injected into ReviewScopeResolver.',
-        'CONFIGURATION_ERROR'
-      );
+    if (!project) {
+      throw projectRequired('linkedItems');
     }
 
     const maxDepth = Math.min(depth ?? 1, MAX_DEPTH);
     const warnings: string[] = [];
+    const compiler = createDefaultCompiler(this.config.adoAllowUnknownFields, this.config.adoApiVersion);
 
-    const visited = new Set<number>();
-    visited.add(rootId);
-    let frontier = [rootId];
+    // Pre-validate rootIds: only those that satisfy scopeFilter enter the BFS.
+    const { wiql: rootValidationWiql } = compiler.compile({
+      project,
+      filterTree: {
+        kind: 'and',
+        nodes: [
+          { kind: 'condition', field: 'System.Id', operator: 'IN', value: rootIds },
+          scopeFilter,
+        ],
+      },
+    });
+    const { ids: validRootIds } = await this.wiqlClient.execute({ project, wiql: rootValidationWiql, auth });
+    const droppedRoots = rootIds.filter((id) => !validRootIds.includes(id));
+    if (droppedRoots.length > 0) {
+      warnings.push(`rootIds excluded by scopeFilter: ${droppedRoots.join(', ')}`);
+    }
+
+    const visited = new Set<number>(validRootIds);
+    let frontier = [...validRootIds];
+    const debugWiqls: string[] = [];
 
     for (let d = 0; d < maxDepth && frontier.length > 0; d++) {
-      this.logger.debug({ depth: d, frontierSize: frontier.length, rootId }, 'BFS level');
+      this.logger.debug({ project, depth: d, frontierSize: frontier.length }, 'linkedItems BFS hop');
 
-      const items = await this.workItemService.fetchWithRelations(frontier, auth, project);
+      // Per-hop WIQL WorkItemLinks query: source=frontier, target=scopeFilter, ADO enforces scope.
+      const sourceFilter: FilterNode = {
+        kind: 'condition',
+        field: 'System.Id',
+        operator: 'IN',
+        value: frontier,
+      };
 
-      // Collect neighbors without adding to visited yet — so we can apply breadth cap before committing
-      const nextFrontier: number[] = [];
+      const { wiql } = compiler.compileLinkQuery({
+        project,
+        sourceFilter,
+        targetFilter: scopeFilter,
+        linkTypes: relationTypes,
+        mode: 'MustContain',
+      });
+
+      if (this.config.adoEnableDebugOutput) {
+        debugWiqls.push(wiql);
+      }
+
+      const result = await this.wiqlClient.execute({ project, wiql, auth });
+
+      const novel: number[] = [];
       const nextSeen = new Set<number>();
-
-      for (const item of items) {
-        for (const rel of item.relations ?? []) {
-          if (!isWorkItemRel(rel.rel)) continue;
-          if (relationTypes && !relationTypes.includes(rel.rel)) continue;
-
-          const neighborId = extractIdFromUrl(rel.url);
-          if (neighborId !== null && !visited.has(neighborId) && !nextSeen.has(neighborId)) {
-            nextSeen.add(neighborId);
-            nextFrontier.push(neighborId);
-          }
+      for (const id of result.targetIds) {
+        if (!visited.has(id) && !nextSeen.has(id)) {
+          nextSeen.add(id);
+          novel.push(id);
         }
       }
 
-      const capped = nextFrontier.length > MAX_BREADTH_PER_LEVEL;
+      const capped = novel.length > MAX_BREADTH_PER_LEVEL;
       if (capped) {
         warnings.push(
-          `BFS level ${d + 1}: found ${nextFrontier.length} linked items, capped to ${MAX_BREADTH_PER_LEVEL}.`
+          `linkedItems BFS level ${d + 1}: found ${novel.length} new linked items, capped to ${MAX_BREADTH_PER_LEVEL}.`
         );
       }
 
-      frontier = capped ? nextFrontier.slice(0, MAX_BREADTH_PER_LEVEL) : nextFrontier;
+      frontier = capped ? novel.slice(0, MAX_BREADTH_PER_LEVEL) : novel;
       for (const id of frontier) visited.add(id);
     }
 
     const ids = Array.from(visited);
 
-    return {
+    const resolution: ScopeResolution = {
       project,
       sourceType: 'linkedItems',
       ids,
       totalMatched: ids.length,
       warnings,
     };
+
+    if (this.config.adoEnableDebugOutput && debugWiqls.length > 0) {
+      resolution.debugWiql = debugWiqls.join('\n---\n');
+    }
+
+    return resolution;
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -361,9 +433,3 @@ function projectRequired(sourceType: string): AdoScopeError {
   );
 }
 
-function extractIdFromUrl(url: string): number | null {
-  const match = /\/workItems\/(\d+)(?:[/?]|$)/i.exec(url);
-  if (!match) return null;
-  const id = parseInt(match[1], 10);
-  return Number.isFinite(id) ? id : null;
-}

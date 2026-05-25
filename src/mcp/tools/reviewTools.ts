@@ -9,7 +9,7 @@ import type { ReviewScope } from '../../domain/reviewScope.js';
 import { REVIEW_FIELDS } from '../../services/requirementReviewService.js';
 import type { AdoWorkItem } from '../../types/ado.js';
 import { buildPageInfo, ANTI_HALLUCINATION_BANNER } from '../../domain/responseModes.js';
-import { encodeCursor, decodeCursor } from '../../services/scopeSnapshotCache.js';
+import { encodeCursor, decodeCursor, computeSourceHash } from '../../services/scopeSnapshotCache.js';
 import type { ScopeSnapshotCache } from '../../services/scopeSnapshotCache.js';
 import type { ReviewScopeResolver } from '../../services/reviewScopeResolver.js';
 import { FieldFilterSchema } from './scopeTools.js';
@@ -18,6 +18,8 @@ import { toCompactRecord } from '../../services/workItemService.js';
 import { htmlToText } from '../../utils/htmlToText.js';
 import { parseWorkItemIdFromUrl } from '../../utils/adoUrl.js';
 import type { Logger } from '../../logging/logger.js';
+import { extractMetadataRefs } from '../../services/metadataValidator.js';
+import type { MetadataValidator } from '../../services/metadataValidator.js';
 
 const CONTEXT_ONLY_NOTICE =
   'This tool returns Azure DevOps context only. ' +
@@ -56,8 +58,9 @@ const SourceSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('linkedItems'),
-    rootId: z.number().int().positive(),
-    relationTypes: z.array(z.string()).optional(),
+    rootIds: z.array(z.number().int().positive()).min(1).max(200),
+    relationTypes: z.array(z.string()).min(1),
+    scopeFilter: FilterNodeSchema,
     depth: z.number().int().min(1).max(3).optional().default(1),
   }),
   z.object({ type: z.literal('savedQuery'), queryPathOrId: z.string() }),
@@ -216,7 +219,10 @@ async function resolvePaginationState(
 ): Promise<PaginationState | McpErrorResponse> {
   if (!cursor) {
     const resolution = await reviewScopeResolver.resolve(scope);
-    const snapshotId = scopeSnapshotCache.put(resolution.ids, { project: resolution.project, sourceType: resolution.sourceType });
+    const sourceHash = scope.source
+      ? computeSourceHash(resolution.project, resolution.sourceType, scope.source)
+      : undefined;
+    const snapshotId = scopeSnapshotCache.put(resolution.ids, { project: resolution.project, sourceType: resolution.sourceType, sourceHash });
     return {
       allIds: resolution.ids,
       offset: 0,
@@ -229,11 +235,25 @@ async function resolvePaginationState(
   }
   const decoded = decodeCursor(cursor);
   if (decoded === null) {
+    logger.warn({
+      cursorLength: cursor.length,
+      cursorPrefix: cursor.slice(0, 8),
+      cursorSuffix: cursor.slice(-4),
+      hasWhitespace: /\s/.test(cursor),
+      hasQuotes: cursor.includes('"') || cursor.includes("'"),
+      looksBase64url: /^[A-Za-z0-9_-]+$/.test(cursor),
+    }, 'CURSOR_INVALID — decodeCursor returned null');
     return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'CURSOR_INVALID', message: 'Cursor is malformed. Restart pagination by calling without cursor.' }) }], isError: true };
   }
   const snapshot = scopeSnapshotCache.get(decoded.snapshotId);
   if (snapshot === null) {
     return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'CURSOR_EXPIRED', message: 'Cursor has expired or been evicted. Restart pagination by calling without cursor.' }) }], isError: true };
+  }
+  if (scope.source && snapshot.meta.sourceHash) {
+    const callerHash = computeSourceHash(snapshot.meta.project, snapshot.meta.sourceType, scope.source);
+    if (callerHash !== snapshot.meta.sourceHash) {
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'CURSOR_SCOPE_MISMATCH', message: 'Cursor was issued for a different scope. Restart pagination without cursor for this source.' }) }], isError: true };
+    }
   }
   return {
     allIds: snapshot.ids,
@@ -259,7 +279,7 @@ function extractHttpErrorMeta(err: unknown): { url: unknown; status: unknown; me
 
 export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
   const {
-    config, logger, reviewScopeResolver, workItemService, fieldDiscoveryService, scopeSnapshotCache,
+    config, logger, reviewScopeResolver, workItemService, fieldDiscoveryService, scopeSnapshotCache, metadataValidator,
   } = deps;
 
   // ── ado_review_work_items ──────────────────────────────────────────────────
@@ -276,7 +296,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
-      source: ValidatedSourceSchema,
+      source: ValidatedSourceSchema.optional(),
       responseMode: z.enum(['overview', 'page']).optional().default('overview'),
       cursor: z.string().optional().describe(
         'Pagination cursor from a previous call\'s pageInfo.nextCursor. Omit for first page.'
@@ -299,7 +319,25 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       ),
     },
     async ({ pat, project, source, responseMode, cursor, pageSize, includeRelations, extraFields, traceabilityLinkTokens }) => {
+      if (!cursor && !source) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'MISSING_SOURCE', message: 'source is required for the first call. Follow-up calls pass only {cursor, pat, project}.' }) }],
+          isError: true,
+        };
+      }
       const auth = resolveAuthContext(config, pat);
+
+      if (source && !cursor) {
+        const metaRefs = extractMetadataRefs(source, extraFields, traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens);
+        metaRefs.project = project;
+        if (metaRefs.fields.length > 0 || metaRefs.workItemTypes.length > 0 || metaRefs.linkTypes.length > 0) {
+          const metaResult = await metadataValidator.validate(metaRefs, auth);
+          if (!metaResult.ok) {
+            return { content: [{ type: 'text' as const, text: JSON.stringify({ error: metaResult.error, unknown: metaResult.unknown, hint: metaResult.hint }) }], isError: true };
+          }
+        }
+      }
+
       const scope: ReviewScope = { project, auth, source };
 
       try {
@@ -405,7 +443,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       } catch (err) {
         const { url, status, method } = extractHttpErrorMeta(err);
         const message = err instanceof Error ? err.message : String(err);
-        logger.warn({ err, url, status, method: typeof method === 'string' ? method.toUpperCase() : method, responseMode, sourceType: source.type }, 'ado_review_work_items failed');
+        logger.warn({ err, url, status, method: typeof method === 'string' ? method.toUpperCase() : method, responseMode, sourceType: source?.type }, 'ado_review_work_items failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
       }
     }
@@ -427,7 +465,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
-      source: ValidatedSourceSchema,
+      source: ValidatedSourceSchema.optional(),
       responseMode: z.enum(['overview', 'page']).optional().default('overview'),
       cursor: z.string().optional().describe(
         'Pagination cursor from a previous call\'s pageInfo.nextCursor. Omit for first page.'
@@ -450,7 +488,25 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       ),
     },
     async ({ pat, project, source, responseMode, cursor, pageSize, includeRelations, extraFields, traceabilityLinkTokens }) => {
+      if (!cursor && !source) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'MISSING_SOURCE', message: 'source is required for the first call. Follow-up calls pass only {cursor, pat, project}.' }) }],
+          isError: true,
+        };
+      }
       const auth = resolveAuthContext(config, pat);
+
+      if (source && !cursor) {
+        const metaRefs = extractMetadataRefs(source, extraFields, traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens);
+        metaRefs.project = project;
+        if (metaRefs.fields.length > 0 || metaRefs.workItemTypes.length > 0 || metaRefs.linkTypes.length > 0) {
+          const metaResult = await metadataValidator.validate(metaRefs, auth);
+          if (!metaResult.ok) {
+            return { content: [{ type: 'text' as const, text: JSON.stringify({ error: metaResult.error, unknown: metaResult.unknown, hint: metaResult.hint }) }], isError: true };
+          }
+        }
+      }
+
       const scope: ReviewScope = { project, auth, source, preset: 'requirement_quality' };
 
       try {
@@ -556,7 +612,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       } catch (err) {
         const { url, status, method } = extractHttpErrorMeta(err);
         const message = err instanceof Error ? err.message : String(err);
-        logger.warn({ err, url, status, method: typeof method === 'string' ? method.toUpperCase() : method, responseMode, sourceType: source.type }, 'ado_review_requirements failed');
+        logger.warn({ err, url, status, method: typeof method === 'string' ? method.toUpperCase() : method, responseMode, sourceType: source?.type }, 'ado_review_requirements failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
       }
     }
@@ -575,7 +631,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
-      source: ValidatedSourceSchema,
+      source: ValidatedSourceSchema.optional(),
       contextMode: z.enum(['L1', 'L2', 'L3']).optional().default('L2').describe(
         'Context depth. L1=single-item fields, L2=+relations/traceability, L3=+peer-group membership.'
       ),
@@ -596,7 +652,25 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       ),
     },
     async ({ pat, project, source, contextMode, groupField, cursor, pageSize, extraFields, traceabilityLinkTokens }) => {
+      if (!cursor && !source) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'MISSING_SOURCE', message: 'source is required for the first call. Follow-up calls pass only {cursor, pat, project}.' }) }],
+          isError: true,
+        };
+      }
       const auth = resolveAuthContext(config, pat);
+
+      if (source && !cursor) {
+        const metaRefs = extractMetadataRefs(source, extraFields, traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens);
+        metaRefs.project = project;
+        if (metaRefs.fields.length > 0 || metaRefs.workItemTypes.length > 0 || metaRefs.linkTypes.length > 0) {
+          const metaResult = await metadataValidator.validate(metaRefs, auth);
+          if (!metaResult.ok) {
+            return { content: [{ type: 'text' as const, text: JSON.stringify({ error: metaResult.error, unknown: metaResult.unknown, hint: metaResult.hint }) }], isError: true };
+          }
+        }
+      }
+
       const scope: ReviewScope = { project, auth, source };
 
       try {
@@ -713,7 +787,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
       project: z.string().optional().describe('Project name.'),
-      source: ValidatedSourceSchema,
+      source: ValidatedSourceSchema.optional(),
       comparisonMode: z.enum(['parent', 'field', 'title-tokens']).describe(
         'How to group items structurally. "parent" groups by parent work item (requires relations), ' +
         '"field" groups by comparisonField value, "title-tokens" groups by shared leading title tokens.'
@@ -735,7 +809,25 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       ),
     },
     async ({ pat, project, source, comparisonMode, comparisonField, maxGroupSize, cursor, pageSize, extraFields }) => {
+      if (!cursor && !source) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'MISSING_SOURCE', message: 'source is required for the first call. Follow-up calls pass only {cursor, pat, project}.' }) }],
+          isError: true,
+        };
+      }
       const auth = resolveAuthContext(config, pat);
+
+      if (source && !cursor) {
+        const metaRefs = extractMetadataRefs(source, extraFields, undefined);
+        metaRefs.project = project;
+        if (metaRefs.fields.length > 0 || metaRefs.workItemTypes.length > 0 || metaRefs.linkTypes.length > 0) {
+          const metaResult = await metadataValidator.validate(metaRefs, auth);
+          if (!metaResult.ok) {
+            return { content: [{ type: 'text' as const, text: JSON.stringify({ error: metaResult.error, unknown: metaResult.unknown, hint: metaResult.hint }) }], isError: true };
+          }
+        }
+      }
+
       const scope: ReviewScope = { project, auth, source };
 
       try {
