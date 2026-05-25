@@ -16,6 +16,7 @@ import { FieldFilterSchema } from './scopeTools.js';
 import { FilterNodeSchema } from '../../domain/fieldFilter.js';
 import { toCompactRecord } from '../../services/workItemService.js';
 import { htmlToText } from '../../utils/htmlToText.js';
+import { parseWorkItemIdFromUrl } from '../../utils/adoUrl.js';
 import type { Logger } from '../../logging/logger.js';
 
 const CONTEXT_ONLY_NOTICE =
@@ -104,12 +105,6 @@ async function resolveAvailableReviewFields(
 
 // ─── Context record helpers ────────────────────────────────────────────────────
 
-function extractRelationTargetId(url: string): number | null {
-  const m = /\/workItems\/(\d+)(?:[/?]|$)/i.exec(url);
-  if (!m) return null;
-  const id = parseInt(m[1], 10);
-  return Number.isFinite(id) ? id : null;
-}
 
 const DESC_MAX_CHARS = 2_000;
 const AC_MAX_CHARS = 500;
@@ -138,7 +133,7 @@ function toContextItem(item: AdoWorkItem): Record<string, unknown> {
 
   if (item.relations) {
     rec['relations'] = item.relations
-      .map((r) => ({ rel: r.rel, targetId: extractRelationTargetId(r.url) }))
+      .map((r) => ({ rel: r.rel, targetId: parseWorkItemIdFromUrl(r.url) }))
       .filter((r) => r.targetId !== null);
   }
 
@@ -152,9 +147,9 @@ function structuralGroupByParent(items: AdoWorkItem[]): Array<{ groupKey: string
   for (const item of items) {
     const parentRel = (item.relations ?? []).find((r) => r.rel === 'System.LinkTypes.Hierarchy-Reverse');
     if (!parentRel) continue;
-    const m = /\/workItems\/(\d+)/i.exec(parentRel.url);
-    if (!m) continue;
-    const key = `parent:${m[1]}`;
+    const parentId = parseWorkItemIdFromUrl(parentRel.url);
+    if (parentId === null) continue;
+    const key = `parent:${parentId}`;
     if (!map.has(key)) map.set(key, []);
     map.get(key)!.push(item.id);
   }

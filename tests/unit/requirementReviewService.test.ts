@@ -7,6 +7,8 @@ import type { AttributeFinding, ReviewFinding } from '../../src/domain/requireme
 const svc = new RequirementReviewService();
 const DEFAULT_TOKENS = ['Affects', 'CoveredBy', 'TestedBy'];
 const defaultOpts = { traceabilityTokens: DEFAULT_TOKENS };
+const ADO_URL = (id: number) =>
+  `https://tfs.example.com/tfs/DefaultCollection/_apis/wit/workItems/${id}`;
 
 function makeItem(fields: Record<string, unknown>, relations?: AdoWorkItem['relations']): AdoWorkItem {
   return { id: 1, fields: { 'System.Id': 1, 'System.WorkItemType': 'Requirement', ...fields }, relations };
@@ -136,7 +138,7 @@ describe('RequirementReviewService — verifiable', () => {
 describe('RequirementReviewService — traceable', () => {
   it('has CoveredBy link → ok, high confidence', () => {
     const item = makeItem({ 'System.Title': 'Req' }, [
-      { rel: 'Elisra.CoveredBy-Forward', url: 'https://tfs/wi/2', attributes: {} },
+      { rel: 'Elisra.CoveredBy-Forward', url: ADO_URL(2), attributes: {} },
     ]);
     const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
     expect(f.status).toBe('ok');
@@ -145,7 +147,7 @@ describe('RequirementReviewService — traceable', () => {
 
   it('has TestedBy link → ok, high confidence', () => {
     const item = makeItem({ 'System.Title': 'Req' }, [
-      { rel: 'Microsoft.VSTS.Common.TestedBy-Forward', url: 'https://tfs/wi/3', attributes: {} },
+      { rel: 'Microsoft.VSTS.Common.TestedBy-Forward', url: ADO_URL(3), attributes: {} },
     ]);
     const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
     expect(f.status).toBe('ok');
@@ -154,7 +156,7 @@ describe('RequirementReviewService — traceable', () => {
 
   it('has Affects link → ok, high confidence', () => {
     const item = makeItem({ 'System.Title': 'Req' }, [
-      { rel: 'System.LinkTypes.Affects-Forward', url: 'https://tfs/wi/4', attributes: {} },
+      { rel: 'System.LinkTypes.Affects-Forward', url: ADO_URL(4), attributes: {} },
     ]);
     const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
     expect(f.status).toBe('ok');
@@ -186,7 +188,7 @@ describe('RequirementReviewService — traceable', () => {
 
   it('custom token "Implements" recognizes Custom.Implements-Forward rel', () => {
     const item = makeItem({ 'System.Title': 'Req' }, [
-      { rel: 'Custom.Implements-Forward', url: 'https://tfs/wi/9', attributes: {} },
+      { rel: 'Custom.Implements-Forward', url: ADO_URL(9), attributes: {} },
     ]);
     const customOpts = { traceabilityTokens: ['Affects', 'CoveredBy', 'TestedBy', 'Implements'] };
     const f = findAttr(svc.review([item], customOpts)[0], 'traceable');
@@ -363,9 +365,6 @@ describe('summarizeFindings', () => {
 
 // ─── traceable links[] (cross-scope join data) ────────────────────────────────
 
-const ADO_URL = (id: number) =>
-  `https://tfs.example.com/tfs/DefaultCollection/_apis/wit/workItems/${id}`;
-
 describe('RequirementReviewService — traceable.links', () => {
   it('CoveredBy link populates links[].targetId', () => {
     const item = makeItem({ 'System.Title': 'Req' }, [
@@ -418,12 +417,14 @@ describe('RequirementReviewService — traceable.links', () => {
     expect(f.links).toBeUndefined();
   });
 
-  it('url does not contain workItems path → targetId excluded from links', () => {
+  it('url does not contain workItems path → warn with empty links (unparseable URL)', () => {
     const item = makeItem({ 'System.Title': 'Req' }, [
       { rel: 'Elisra.CoveredBy-Forward', url: 'https://tfs/wi/7', attributes: {} },
     ]);
     const f = findAttr(svc.review([item], defaultOpts)[0], 'traceable');
-    expect(f.status).toBe('ok');
+    // Link token matches but URL is unparseable → warn so LLM knows links[] is empty
+    expect(f.status).toBe('warn');
     expect(f.links).toEqual([]);
+    expect(f.limitation).toBeTruthy();
   });
 });

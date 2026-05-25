@@ -47,14 +47,17 @@ export const RISK_TERMS: readonly string[] = [
   'error-free',
 ];
 
+const VAGUE_TERMS_LC: readonly string[] = Object.freeze(VAGUE_TERMS.map((t) => t.toLowerCase()));
+const RISK_TERMS_LC: readonly string[] = Object.freeze(RISK_TERMS.map((t) => t.toLowerCase()));
+
 export function findVagueTerms(text: string): string[] {
   const lower = text.toLowerCase();
-  return VAGUE_TERMS.filter((term) => lower.includes(term.toLowerCase()));
+  return VAGUE_TERMS.filter((_, i) => lower.includes(VAGUE_TERMS_LC[i]));
 }
 
 export function findRiskTerms(text: string): string[] {
   const lower = text.toLowerCase();
-  return RISK_TERMS.filter((term) => lower.includes(term.toLowerCase()));
+  return RISK_TERMS.filter((_, i) => lower.includes(RISK_TERMS_LC[i]));
 }
 
 /** Count occurrences of "shall" — high count may indicate multiple requirements merged. */

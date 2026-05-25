@@ -1,8 +1,9 @@
 import type { AdoWorkItem } from '../types/ado.js';
-import type { AttributeFinding, ReviewFinding } from '../domain/requirementQuality.js';
+import type { AttributeFinding, ReviewFinding, TraceabilityLink } from '../domain/requirementQuality.js';
 import { computeOverallRisk } from '../domain/requirementQuality.js';
-import { findVagueTerms, findRiskTerms, countShall } from '../domain/lexicon.js';
+import { findVagueTerms, findRiskTerms } from '../domain/lexicon.js';
 import { htmlToText } from '../utils/htmlToText.js';
+import { parseWorkItemIdFromUrl } from '../utils/adoUrl.js';
 
 // Fields that must be fetched for a complete review
 export const REVIEW_FIELDS = [
@@ -79,7 +80,8 @@ function reviewSingular(item: AdoWorkItem): AttributeFinding {
   const description = fieldText(item, 'System.Description');
   const title = fieldText(item, 'System.Title');
 
-  const shallCount = countShall(description) + countShall(title);
+  const combinedLower = `${title} ${description}`.toLowerCase();
+  const shallCount = (combinedLower.match(/\bshall\b/g) ?? []).length;
 
   if (shallCount > 3) {
     return {
@@ -93,8 +95,7 @@ function reviewSingular(item: AdoWorkItem): AttributeFinding {
   }
 
   // Check for "and shall" pattern — strong signal of merged requirements
-  const combined = `${title} ${description}`.toLowerCase();
-  if (/\bshall\b.{1,200}\bshall\b/s.test(combined) && shallCount >= 2) {
+  if (/\bshall\b.{1,200}\bshall\b/s.test(combinedLower) && shallCount >= 2) {
     return {
       attribute: 'singular',
       status: 'warn',
@@ -154,15 +155,6 @@ function reviewVerifiable(item: AdoWorkItem): AttributeFinding {
   };
 }
 
-const WORK_ITEM_ID_FROM_URL = /\/workItems\/(\d+)(?:[/?#]|$)/i;
-
-function parseTargetId(url: string): number | null {
-  const m = WORK_ITEM_ID_FROM_URL.exec(url);
-  if (!m) return null;
-  const id = parseInt(m[1], 10);
-  return Number.isFinite(id) ? id : null;
-}
-
 function reviewTraceable(item: AdoWorkItem, tokens: readonly string[]): AttributeFinding {
   if (!item.relations) {
     return {
@@ -181,12 +173,12 @@ function reviewTraceable(item: AdoWorkItem, tokens: readonly string[]): Attribut
 
   // Parse and dedup links; relations with unparsable URLs are captured as evidence-only entries
   const seen = new Set<string>();
-  const links: Array<{ rel: string; targetId: number }> = [];
+  const links: TraceabilityLink[] = [];
   const evidenceLines: string[] = [];
 
   for (const r of matchedRelations) {
-    const targetId = r.url ? parseTargetId(r.url) : null;
-    const key = targetId !== null ? `${r.rel}#${targetId}` : r.rel;
+    const targetId = r.url ? parseWorkItemIdFromUrl(r.url) : null;
+    const key = targetId !== null ? `${r.rel}#${targetId}` : `${r.rel}#${r.url ?? ''}`;
     if (seen.has(key)) continue;
     seen.add(key);
     if (targetId !== null) {
@@ -197,7 +189,7 @@ function reviewTraceable(item: AdoWorkItem, tokens: readonly string[]): Attribut
     }
   }
 
-  if (matchedRelations.length > 0) {
+  if (links.length > 0) {
     return {
       attribute: 'traceable',
       status: 'ok',
@@ -205,6 +197,18 @@ function reviewTraceable(item: AdoWorkItem, tokens: readonly string[]): Attribut
       confidenceReason: 'At least one traceability link (Affects, CoveredBy, TestedBy) exists — deterministic.',
       evidence: evidenceLines,
       links,
+    };
+  }
+
+  if (matchedRelations.length > 0) {
+    return {
+      attribute: 'traceable',
+      status: 'warn',
+      confidence: 'medium',
+      confidenceReason: 'Traceability relations present but target IDs unparseable.',
+      evidence: evidenceLines,
+      links: [],
+      limitation: 'Relation URLs did not match /workItems/<id> pattern.',
     };
   }
 
