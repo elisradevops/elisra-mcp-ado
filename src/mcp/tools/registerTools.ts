@@ -3,6 +3,7 @@ import type { AppConfig } from '../../config/config.js';
 import type { Logger } from '../../logging/logger.js';
 import { AdoClient } from '../../ado/adoClient.js';
 import { ProjectsClient } from '../../ado/projectsClient.js';
+import { AreaNodesClient } from '../../ado/areaNodesClient.js';
 import { FieldsClient } from '../../ado/fieldsClient.js';
 import { LinkTypesClient } from '../../ado/linkTypesClient.js';
 import { WorkItemTypesClient } from '../../ado/workItemTypesClient.js';
@@ -27,12 +28,14 @@ import { registerWorkItemTools } from './workItemTools.js';
 import { registerReviewTools } from './reviewTools.js';
 import { registerContextTools } from './contextTools.js';
 import { registerDebugTools } from './debugTools.js';
+import { registerAreaTools } from './areaTools.js';
 
 export interface ToolDeps {
   config: AppConfig;
   logger: Logger;
   adoClient: AdoClient;
   projectsClient: ProjectsClient;
+  areaNodesClient: AreaNodesClient;
   wiqlClient: WiqlClient;
   workItemService: WorkItemService;
   fieldDiscoveryService: FieldDiscoveryService;
@@ -50,6 +53,7 @@ export interface ToolDeps {
 export function buildToolDeps(config: AppConfig, logger: Logger): ToolDeps {
   const adoClient = new AdoClient(config, logger);
   const projectsClient = new ProjectsClient(adoClient, config);
+  const areaNodesClient = new AreaNodesClient(adoClient, config);
   const fieldsClient = new FieldsClient(adoClient, config);
   const linkTypesClient = new LinkTypesClient(adoClient, config);
   const wiqlClient = new WiqlClient(adoClient, config, logger);
@@ -72,6 +76,7 @@ export function buildToolDeps(config: AppConfig, logger: Logger): ToolDeps {
     logger,
     adoClient,
     projectsClient,
+    areaNodesClient,
     wiqlClient,
     workItemService,
     fieldDiscoveryService,
@@ -96,4 +101,5 @@ export function registerAllTools(server: McpServer, deps: ToolDeps): void {
   registerReviewTools(server, deps);
   registerContextTools(server, deps);
   registerDebugTools(server, deps);
+  registerAreaTools(server, deps);
 }

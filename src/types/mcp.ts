@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { AdoClassificationNode } from './ado.js';
 
 // Shared auth input — all tools accept an optional auth context
 export const AuthInputSchema = z.object({
@@ -71,4 +72,13 @@ export interface AdoCheckPatOutput {
   displayName?: string;
   id?: string;
   message?: string;
+}
+
+// ado_get_area_tree
+export interface AdoGetAreaTreeOutput {
+  project: string;
+  depth: number;
+  flatPaths: string[];
+  tree: AdoClassificationNode | null;
+  warnings: string[];
 }
