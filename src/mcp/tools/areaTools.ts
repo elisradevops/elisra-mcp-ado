@@ -7,7 +7,7 @@ import type { AdoClassificationNode } from '../../types/ado.js';
 import type { AdoGetAreaTreeOutput } from '../../types/mcp.js';
 
 function flattenPaths(node: AdoClassificationNode, paths: string[] = []): string[] {
-  if (node.path) paths.push(node.path);
+  if (node.path !== undefined) paths.push(node.path);
   if (node.children) {
     for (const child of node.children) {
       flattenPaths(child, paths);
