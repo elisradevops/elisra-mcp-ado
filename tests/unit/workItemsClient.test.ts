@@ -26,6 +26,8 @@ function makeConfig(adoApiVersion: string): AppConfig {
   };
 }
 
+const STUB_ITEM = { id: 1, rev: 1, fields: { 'System.Id': 1, 'System.Title': 'Test' }, relations: undefined };
+
 function makeAdoClient(response: unknown) {
   return {
     request: vi.fn().mockResolvedValue(response),
@@ -61,7 +63,7 @@ describe('WorkItemsClient.fetchBatch', () => {
     });
 
     it('includes ids in request body', async () => {
-      const client = makeAdoClient({ value: [] });
+      const client = makeAdoClient({ value: [STUB_ITEM, STUB_ITEM] });
       const wic = new WorkItemsClient(client, makeConfig('7.0'));
       await wic.fetchBatch([10, 20], AUTH);
 
@@ -70,7 +72,7 @@ describe('WorkItemsClient.fetchBatch', () => {
     });
 
     it('includes fields in request body when provided', async () => {
-      const client = makeAdoClient({ value: [] });
+      const client = makeAdoClient({ value: [STUB_ITEM] });
       const wic = new WorkItemsClient(client, makeConfig('7.0'));
       await wic.fetchBatch([1], AUTH, ['System.Id', 'System.Title']);
 
@@ -78,22 +80,37 @@ describe('WorkItemsClient.fetchBatch', () => {
       expect(call.data).toMatchObject({ fields: ['System.Id', 'System.Title'] });
     });
 
-    it('includes $expand when expand is not none', async () => {
-      const client = makeAdoClient({ value: [] });
+    it('uses GET path (not POST workitemsbatch) when expand is relations', async () => {
+      const client = makeAdoClient({ value: [STUB_ITEM] });
       const wic = new WorkItemsClient(client, makeConfig('7.0'));
       await wic.fetchBatch([1], AUTH, undefined, 'relations');
 
       const call = vi.mocked(client.request).mock.calls[0][0];
+      // Fix D: $expand=relations must go through GET to avoid on-prem batch 500
+      expect(call.method).toBe('GET');
       expect(call.params?.['$expand']).toBe('relations');
     });
 
     it('sets apiVersionFallback: true', async () => {
-      const client = makeAdoClient({ value: [] });
+      const client = makeAdoClient({ value: [STUB_ITEM] });
       const wic = new WorkItemsClient(client, makeConfig('7.0'));
       await wic.fetchBatch([1], AUTH);
 
       const call = vi.mocked(client.request).mock.calls[0][0];
       expect(call.apiVersionFallback).toBe(true);
+    });
+
+    it('throws when ADO returns 0 items for non-empty ids (Fix C)', async () => {
+      const client = makeAdoClient({ value: [] });
+      const wic = new WorkItemsClient(client, makeConfig('7.0'));
+      await expect(wic.fetchBatch([1, 2], AUTH)).rejects.toThrow('ADO returned 0 of 2 requested items');
+    });
+
+    it('does not throw on empty result when allowEmptyResult=true', async () => {
+      const client = makeAdoClient({ value: [] });
+      const wic = new WorkItemsClient(client, makeConfig('7.0'));
+      const result = await wic.fetchBatch([1], AUTH, undefined, undefined, undefined, true);
+      expect(result).toEqual([]);
     });
   });
 
@@ -110,7 +127,7 @@ describe('WorkItemsClient.fetchBatch', () => {
     });
 
     it('encodes ids as comma-separated query param', async () => {
-      const client = makeAdoClient({ value: [] });
+      const client = makeAdoClient({ value: [STUB_ITEM, STUB_ITEM, STUB_ITEM] });
       const wic = new WorkItemsClient(client, makeConfig('4.1'));
       await wic.fetchBatch([10, 20, 30], AUTH);
 
@@ -119,7 +136,7 @@ describe('WorkItemsClient.fetchBatch', () => {
     });
 
     it('encodes fields as comma-separated query param', async () => {
-      const client = makeAdoClient({ value: [] });
+      const client = makeAdoClient({ value: [STUB_ITEM] });
       const wic = new WorkItemsClient(client, makeConfig('4.1'));
       await wic.fetchBatch([1], AUTH, ['System.Id', 'System.Title']);
 
@@ -128,7 +145,7 @@ describe('WorkItemsClient.fetchBatch', () => {
     });
 
     it('includes $expand query param when expand is relations', async () => {
-      const client = makeAdoClient({ value: [] });
+      const client = makeAdoClient({ value: [STUB_ITEM] });
       const wic = new WorkItemsClient(client, makeConfig('4.1'));
       await wic.fetchBatch([1], AUTH, undefined, 'relations');
 
@@ -137,7 +154,7 @@ describe('WorkItemsClient.fetchBatch', () => {
     });
 
     it('sets apiVersionFallback: true', async () => {
-      const client = makeAdoClient({ value: [] });
+      const client = makeAdoClient({ value: [STUB_ITEM] });
       const wic = new WorkItemsClient(client, makeConfig('4.1'));
       await wic.fetchBatch([1], AUTH);
 
@@ -147,14 +164,25 @@ describe('WorkItemsClient.fetchBatch', () => {
   });
 
   describe('ADO_API_VERSION = 5.0 (first batch-capable version)', () => {
-    it('uses POST workitemsbatch', async () => {
-      const client = makeAdoClient({ value: [] });
+    it('uses POST workitemsbatch when no expand', async () => {
+      const client = makeAdoClient({ value: [STUB_ITEM] });
       const wic = new WorkItemsClient(client, makeConfig('5.0'));
       await wic.fetchBatch([1], AUTH);
 
       const call = vi.mocked(client.request).mock.calls[0][0];
       expect(call.method).toBe('POST');
       expect(call.url).toContain('workitemsbatch');
+    });
+
+    it('uses GET path when expand is relations (Fix D)', async () => {
+      const client = makeAdoClient({ value: [STUB_ITEM] });
+      const wic = new WorkItemsClient(client, makeConfig('5.0'));
+      await wic.fetchBatch([1], AUTH, undefined, 'relations');
+
+      const call = vi.mocked(client.request).mock.calls[0][0];
+      expect(call.method).toBe('GET');
+      expect(call.url).not.toContain('workitemsbatch');
+      expect(call.params?.['$expand']).toBe('relations');
     });
   });
 });

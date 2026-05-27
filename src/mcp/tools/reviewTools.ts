@@ -325,6 +325,12 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           isError: true,
         };
       }
+      if (!cursor && !project) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'MISSING_PROJECT', message: 'project is required on the first call to avoid 404s on on-prem ADO Server.' }) }],
+          isError: true,
+        };
+      }
       const auth = resolveAuthContext(config, pat);
 
       if (source && !cursor) {
@@ -494,6 +500,12 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           isError: true,
         };
       }
+      if (!cursor && !project) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'MISSING_PROJECT', message: 'project is required on the first call to avoid 404s on on-prem ADO Server.' }) }],
+          isError: true,
+        };
+      }
       const auth = resolveAuthContext(config, pat);
 
       if (source && !cursor) {
@@ -658,6 +670,12 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           isError: true,
         };
       }
+      if (!cursor && !project) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'MISSING_PROJECT', message: 'project is required on the first call to avoid 404s on on-prem ADO Server.' }) }],
+          isError: true,
+        };
+      }
       const auth = resolveAuthContext(config, pat);
 
       if (source && !cursor) {
@@ -812,6 +830,12 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       if (!cursor && !source) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: 'MISSING_SOURCE', message: 'source is required for the first call. Follow-up calls pass only {cursor, pat, project}.' }) }],
+          isError: true,
+        };
+      }
+      if (!cursor && !project) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'MISSING_PROJECT', message: 'project is required on the first call to avoid 404s on on-prem ADO Server.' }) }],
           isError: true,
         };
       }

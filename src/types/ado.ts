@@ -112,6 +112,16 @@ export interface AdoWorkItemRelationTypesResponse {
   value: AdoWorkItemRelationType[];
 }
 
+// ADO classification node (area/iteration tree) as returned by _apis/wit/classificationnodes
+export interface AdoClassificationNode {
+  id: number;
+  name: string;
+  path?: string;
+  structureType: 'area' | 'iteration' | string;
+  hasChildren: boolean;
+  children?: AdoClassificationNode[];
+}
+
 // Compact work item shape — used in all overview/sample responses
 export interface AdoCompactWorkItem {
   id: number;

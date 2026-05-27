@@ -84,7 +84,7 @@ function mapHttpError(err: AxiosError, debug: boolean, logger?: Logger, requestD
     }
     return new Error(
       isBatchCall
-        ? 'ADO batch fetch failed (one or more IDs deleted or cross-project). Enable ADO_ENABLE_DEBUG_OUTPUT=true for details.'
+        ? 'ADO batch fetch failed — verify: (1) project parameter is set and matches the items\' project, (2) PAT has vso.work read scope, (3) $expand=relations is not used with POST workitemsbatch on this TFS version. Enable ADO_ENABLE_DEBUG_OUTPUT=true for details.'
         : 'ADO request failed (access denied, invalid credentials, or resource not found). Enable ADO_ENABLE_DEBUG_OUTPUT=true for details.'
     );
   }

@@ -92,6 +92,7 @@ export function buildSimulationDeps(opts: SimulationDepsOptions): {
     logger,
     adoClient: null as never,
     projectsClient: null as never,
+    areaNodesClient: null as never,
     wiqlClient: wiqlClient as unknown as WiqlClient,
     workItemService,
     fieldDiscoveryService: fieldDiscoveryService as never,

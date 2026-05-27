@@ -26,6 +26,8 @@ export const NEVER_INCLUDE_BY_DEFAULT = new Set([
 export interface FetchOptions {
   fields?: string[];
   expand?: WorkItemExpand;
+  /** Pass true when the caller intentionally uses errorPolicy:omit and can receive 0 items legitimately (e.g. deleted IDs). Default: false — throws if ADO returns 0 items for non-empty input. */
+  allowEmptyResult?: boolean;
 }
 
 export class WorkItemService {
@@ -42,7 +44,7 @@ export class WorkItemService {
       ids,
       batchSize,
       BATCH_CONCURRENCY,
-      (batch) => this.workItemsClient.fetchBatch(batch, auth, options.fields, options.expand, project)
+      (batch) => this.workItemsClient.fetchBatch(batch, auth, options.fields, options.expand, project, options.allowEmptyResult)
     );
   }
 
