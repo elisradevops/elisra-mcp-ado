@@ -5,6 +5,18 @@ import { resolveAuthContext } from '../../auth/authContext.js';
 import { safeJsonStringify } from '../../utils/safeJson.js';
 import { toCompactRecord, COMPACT_FIELDS, NEVER_INCLUDE_BY_DEFAULT } from '../../services/workItemService.js';
 
+// Fields already projected (and possibly transformed) by toCompactRecord — exclude from extras to avoid overwriting.
+const COMPACT_FIELD_REFS = new Set(COMPACT_FIELDS as readonly string[]);
+
+function pickFields(fieldMap: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of keys) {
+    if (COMPACT_FIELD_REFS.has(k)) continue; // already in compact; don't overwrite transformed value
+    if (Object.prototype.hasOwnProperty.call(fieldMap, k)) out[k] = fieldMap[k];
+  }
+  return out;
+}
+
 export function registerWorkItemTools(server: McpServer, deps: ToolDeps): void {
   const { config, logger, workItemService } = deps;
 
@@ -16,7 +28,7 @@ export function registerWorkItemTools(server: McpServer, deps: ToolDeps): void {
     'Default mode returns compact field data for every ID supplied.',
     {
       pat: z.string().optional().describe('Azure DevOps PAT.'),
-      project: z.string().optional().describe('Project name. Provide when known — scopes the batch API call to the project, avoiding 404s on on-prem ADO Server.'),
+      project: z.string().min(1).describe('Project name. Required — scopes the batch API call to the project, avoiding 404s on on-prem ADO Server.'),
       ids: z.array(z.number().int().positive()).min(1).max(200).describe('Work item IDs to fetch (max 200 per call).'),
       fields: z.array(z.string()).optional().describe(
         'Field reference names to fetch. Omit for compact defaults. ' +
@@ -68,10 +80,9 @@ export function registerWorkItemTools(server: McpServer, deps: ToolDeps): void {
 
         const output = items.map((item) => {
           const compact = toCompactRecord(item);
-          if (expand !== 'none' && item.relations) {
-            return { ...compact, relations: item.relations };
-          }
-          return compact;
+          const extras = fields ? pickFields(item.fields, fields) : {};
+          const withRelations = expand !== 'none' && item.relations ? { relations: item.relations } : {};
+          return { ...compact, ...extras, ...withRelations };
         });
 
         logger.info({ count: items.length }, 'ado_get_work_items_by_ids succeeded');

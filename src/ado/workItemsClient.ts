@@ -8,7 +8,7 @@ import { parseApiMajor } from './apiVersionLadder.js';
 export type WorkItemExpand = 'none' | 'relations' | 'all';
 
 export interface IWorkItemsClient {
-  fetchBatch(ids: number[], auth: AuthContext, fields?: string[], expand?: WorkItemExpand, project?: string): Promise<AdoWorkItem[]>;
+  fetchBatch(ids: number[], auth: AuthContext, fields?: string[], expand?: WorkItemExpand, project?: string, allowEmptyResult?: boolean): Promise<AdoWorkItem[]>;
   fetchSingle(id: number, auth: AuthContext, expand?: WorkItemExpand, project?: string): Promise<AdoWorkItem>;
 }
 
@@ -31,15 +31,21 @@ export class WorkItemsClient implements IWorkItemsClient {
     auth: AuthContext,
     fields?: string[],
     expand?: WorkItemExpand,
-    project?: string
+    project?: string,
+    allowEmptyResult = false
   ): Promise<AdoWorkItem[]> {
     if (ids.length === 0) return [];
     if (ids.length > 200) {
       throw new RangeError(`fetchBatch: ADO workitemsbatch limit is 200 IDs, got ${ids.length}. Use WorkItemService.fetchMany to batch automatically.`);
     }
 
-    if (this.isPreBatchTfs()) {
-      // TFS 2018 path: GET /{project}/_apis/wit/workitems?ids=1,2,3[&fields=...][&$expand=...]
+    // Use GET path for: TFS 2018 (no batch endpoint) OR any $expand request.
+    // POST workitemsbatch + $expand=relations returns 500 on many on-prem TFS versions.
+    // GET /_apis/wit/workitems?ids=...&$expand=... is supported on all versions.
+    const useGetPath = this.isPreBatchTfs() || (expand !== undefined && expand !== 'none');
+
+    if (useGetPath) {
+      // GET /{project}/_apis/wit/workitems?ids=1,2,3[&fields=...][&$expand=...]
       if (!project) this.logger?.warn({ idCount: ids.length }, 'fetchBatch: no project — using org-scoped URL, may 404 on on-prem ADO Server');
       const url = project
         ? `${this.config.adoOrgUrl}/${encodeURIComponent(project)}/_apis/wit/workitems`
@@ -58,10 +64,14 @@ export class WorkItemsClient implements IWorkItemsClient {
         params,
         apiVersionFallback: true,
       });
-      return response.value ?? [];
+      const result = response.value ?? [];
+      if (result.length === 0 && ids.length > 0 && !allowEmptyResult) {
+        throw new Error(`ADO returned 0 of ${ids.length} requested items — verify the project parameter matches the items' project and that the PAT has read access.`);
+      }
+      return result;
     }
 
-    // 5.0+ path: POST /{project}/_apis/wit/workitemsbatch
+    // 5.0+ path: POST /{project}/_apis/wit/workitemsbatch (fields-only, no expand)
     if (!project) this.logger?.warn({ idCount: ids.length }, 'fetchBatch: no project — using org-scoped URL, may 404 on on-prem ADO Server');
     const url = project
       ? `${this.config.adoOrgUrl}/${encodeURIComponent(project)}/_apis/wit/workitemsbatch`
@@ -69,9 +79,6 @@ export class WorkItemsClient implements IWorkItemsClient {
     const params: Record<string, string> = {
       'api-version': this.config.adoApiVersion,
     };
-    if (expand && expand !== 'none') {
-      params['$expand'] = expand;
-    }
 
     const body: Record<string, unknown> = { ids, errorPolicy: 'omit' };
     if (fields && fields.length > 0) {
@@ -86,7 +93,11 @@ export class WorkItemsClient implements IWorkItemsClient {
       data: body,
       apiVersionFallback: true,
     });
-    return response.value ?? [];
+    const result = response.value ?? [];
+    if (result.length === 0 && ids.length > 0 && !allowEmptyResult) {
+      throw new Error(`ADO returned 0 of ${ids.length} requested items — verify the project parameter matches the items' project and that the PAT has read access.`);
+    }
+    return result;
   }
 
   async fetchSingle(id: number, auth: AuthContext, expand?: WorkItemExpand, project?: string): Promise<AdoWorkItem> {

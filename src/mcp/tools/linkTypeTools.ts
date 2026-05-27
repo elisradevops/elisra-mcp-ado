@@ -35,7 +35,7 @@ export function registerLinkTypeTools(server: McpServer, deps: ToolDeps): void {
         const message = err instanceof Error ? err.message : String(err);
         logger.warn({ err }, 'ado_discover_link_types failed — falling back to seed catalog');
         const out = linkTypeDiscoveryService.buildSeedFallback(message, includeAll ?? false);
-        return { content: [{ type: 'text' as const, text: safeJsonStringify(out, 2) }] };
+        return { content: [{ type: 'text' as const, text: safeJsonStringify(out, 2) }], isError: true };
       }
     }
   );

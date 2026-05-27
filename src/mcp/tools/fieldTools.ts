@@ -102,7 +102,7 @@ export function registerFieldTools(server: McpServer, deps: ToolDeps): void {
           fields,
           warnings: [`Field discovery failed: ${message}. Returning seed catalog (${fields.length} fields).`],
         };
-        return { content: [{ type: 'text' as const, text: safeJsonStringify(out, 2) }] };
+        return { content: [{ type: 'text' as const, text: safeJsonStringify(out, 2) }], isError: true };
       }
     }
   );
