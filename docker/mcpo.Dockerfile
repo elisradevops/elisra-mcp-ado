@@ -5,7 +5,8 @@
 # mcpo: https://github.com/open-webui/mcpo
 # Usage:  mcpo --port 8000 --api-key <key> -- node dist/index.js
 # ──────────────────────────────────────────────────────────────────────────────
-FROM elisradevops/elisra-mcp-ado:latest AS mcpo-bridge
+ARG MCP_IMAGE_TAG=latest
+FROM elisradevops/elisra-mcp-ado:${MCP_IMAGE_TAG} AS mcpo-bridge
 
 # Pin mcpo to avoid silent breakage from upstream changes between builds.
 # Override at build time: docker build --build-arg MCPO_VERSION=x.y.z ...

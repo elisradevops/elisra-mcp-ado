@@ -80,6 +80,8 @@ jobs:
           file: docker/mcpo.Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
+          build-args: |
+            MCP_IMAGE_TAG=${{ steps.bump.outputs.newTag }}
           tags: |
             elisradevops/elisra-mcp-ado-mcpo:${{ steps.bump.outputs.newTag }}
           cache-from: type=gha
