@@ -29,10 +29,18 @@ import { registerReviewTools } from './reviewTools.js';
 import { registerContextTools } from './contextTools.js';
 import { registerDebugTools } from './debugTools.js';
 import { registerAreaTools } from './areaTools.js';
+import { createWrapTool, type ToolResult } from './toolHelpers.js';
+import { WriteApprovalStore } from '../../approvals/writeApprovalStore.js';
+import { WorkItemCreateClient } from '../../ado/workItemCreateClient.js';
+import { registerWriteTools } from './writeTools.js';
+
+export type { ToolResult };
 
 export interface ToolDeps {
   config: AppConfig;
   logger: Logger;
+  /** Wrap a tool handler with per-call requestId generation, context propagation, and start log. */
+  wrapTool: ReturnType<typeof createWrapTool>;
   adoClient: AdoClient;
   projectsClient: ProjectsClient;
   areaNodesClient: AreaNodesClient;
@@ -48,9 +56,16 @@ export interface ToolDeps {
   completenessGapService: CompletenessGapService;
   consistencyCandidateService: ConsistencyCandidateService;
   scopeSnapshotCache: ScopeSnapshotCache;
+  writeApprovalStore?: WriteApprovalStore;
+  workItemCreateClient?: WorkItemCreateClient;
 }
 
-export function buildToolDeps(config: AppConfig, logger: Logger): ToolDeps {
+export interface P2Deps {
+  writeApprovalStore: WriteApprovalStore;
+}
+
+export function buildToolDeps(config: AppConfig, logger: Logger, p2?: P2Deps): ToolDeps {
+  const wrapTool = createWrapTool(logger);
   const adoClient = new AdoClient(config, logger);
   const projectsClient = new ProjectsClient(adoClient, config);
   const areaNodesClient = new AreaNodesClient(adoClient, config);
@@ -63,17 +78,21 @@ export function buildToolDeps(config: AppConfig, logger: Logger): ToolDeps {
   const fieldDiscoveryService = new FieldDiscoveryService(fieldsClient);
   const linkTypeDiscoveryService = new LinkTypeDiscoveryService(linkTypesClient);
   const metadataValidator = new MetadataValidator(fieldsClient, linkTypesClient, workItemTypesClient);
-  const workItemService = new WorkItemService(workItemsClient, config);
+  const workItemService = new WorkItemService(workItemsClient, config, fieldDiscoveryService);
   const reviewScopeResolver = new ReviewScopeResolver(wiqlClient, config, logger, workItemService, queriesClient);
   const requirementReviewService = new RequirementReviewService();
   const contextPacketService = new ContextPacketService(workItemService, wiqlClient, config, logger);
   const completenessGapService = new CompletenessGapService();
   const consistencyCandidateService = new ConsistencyCandidateService();
   const scopeSnapshotCache = new ScopeSnapshotCache(config.adoScopeCacheTtlMs, config.adoScopeCacheMaxEntries);
+  const workItemCreateClient = p2
+    ? new WorkItemCreateClient(adoClient, config, logger)
+    : undefined;
 
   return {
     config,
     logger,
+    wrapTool,
     adoClient,
     projectsClient,
     areaNodesClient,
@@ -89,6 +108,8 @@ export function buildToolDeps(config: AppConfig, logger: Logger): ToolDeps {
     completenessGapService,
     consistencyCandidateService,
     scopeSnapshotCache,
+    writeApprovalStore: p2?.writeApprovalStore,
+    workItemCreateClient,
   };
 }
 
@@ -102,4 +123,5 @@ export function registerAllTools(server: McpServer, deps: ToolDeps): void {
   registerContextTools(server, deps);
   registerDebugTools(server, deps);
   registerAreaTools(server, deps);
+  registerWriteTools(server, deps);
 }

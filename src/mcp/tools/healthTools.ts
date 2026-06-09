@@ -10,13 +10,13 @@ const patParam = z.string().optional().describe(
 );
 
 export function registerHealthTools(server: McpServer, deps: ToolDeps): void {
-  const { config, logger, projectsClient } = deps;
+  const { config, logger, projectsClient, wrapTool } = deps;
 
   server.tool(
     'ado_ping',
     'Ping Azure DevOps Server and return the collection URL, top 10 available projects, API version, and server version. Use this to verify connectivity and PAT validity before running other tools.',
     { pat: patParam },
-    async ({ pat }) => {
+    wrapTool('ado_ping', async ({ pat }) => {
       const auth = resolveAuthContext(config, pat);
       try {
         const [projects, connectionData] = await Promise.all([
@@ -41,14 +41,13 @@ export function registerHealthTools(server: McpServer, deps: ToolDeps): void {
           isError: true,
         };
       }
-    }
-  );
+    }));
 
   server.tool(
     'ado_check_pat',
     'Validate a PAT against Azure DevOps Server and return the authenticated user identity. Use this to confirm a PAT is valid before starting a review session.',
     { pat: patParam },
-    async ({ pat }) => {
+    wrapTool('ado_check_pat', async ({ pat }) => {
       const auth = resolveAuthContext(config, pat);
       if (!auth.pat) {
         const out: AdoCheckPatOutput = {
@@ -77,6 +76,5 @@ export function registerHealthTools(server: McpServer, deps: ToolDeps): void {
           isError: true,
         };
       }
-    }
-  );
+    }));
 }

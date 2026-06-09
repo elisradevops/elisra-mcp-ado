@@ -25,7 +25,7 @@ const ContextOptionsSchema = {
 };
 
 export function registerContextTools(server: McpServer, deps: ToolDeps): void {
-  const { config, logger, contextPacketService } = deps;
+  const { config, logger, contextPacketService, wrapTool } = deps;
 
   // ── ado_build_work_item_context_packet ────────────────────────────────────
 
@@ -40,7 +40,7 @@ export function registerContextTools(server: McpServer, deps: ToolDeps): void {
       id: z.number().int().positive().describe('Work item ID to build context for.'),
       ...ContextOptionsSchema,
     },
-    async ({ pat, id, includeSiblings, contextField, project, parentDepth, childrenDepth, descriptionMaxChars }) => {
+    wrapTool('ado_build_work_item_context_packet', async ({ pat, id, includeSiblings, contextField, project, parentDepth, childrenDepth, descriptionMaxChars }) => {
       const auth = resolveAuthContext(config, pat);
 
       try {
@@ -72,8 +72,7 @@ export function registerContextTools(server: McpServer, deps: ToolDeps): void {
         logger.warn({ err, rootId: id }, 'ado_build_work_item_context_packet failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
       }
-    }
-  );
+    }));
 
   // ── ado_build_requirement_context_packet ─────────────────────────────────
 
@@ -91,7 +90,7 @@ export function registerContextTools(server: McpServer, deps: ToolDeps): void {
         'Include sibling requirements (same parent). Default true for requirement context.'
       ),
     },
-    async ({ pat, id, includeSiblings, contextField, project, parentDepth, childrenDepth, descriptionMaxChars }) => {
+    wrapTool('ado_build_requirement_context_packet', async ({ pat, id, includeSiblings, contextField, project, parentDepth, childrenDepth, descriptionMaxChars }) => {
       const auth = resolveAuthContext(config, pat);
 
       try {
@@ -114,6 +113,5 @@ export function registerContextTools(server: McpServer, deps: ToolDeps): void {
         logger.warn({ err, rootId: id }, 'ado_build_requirement_context_packet failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
       }
-    }
-  );
+    }));
 }

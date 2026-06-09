@@ -1,5 +1,6 @@
 import winston from 'winston';
 import type { AppConfig } from '../config/config.js';
+import { requestContextStorage } from '../utils/requestContext.js';
 
 // Pino-compatible log levels (fatal/trace added as custom levels)
 const LOG_LEVELS = {
@@ -24,6 +25,8 @@ export interface Logger {
   verbose: LeveledMethod;
   debug: LeveledMethod;
   trace: LeveledMethod;
+  /** Create a child logger with additional default bindings merged into every log entry. */
+  child(bindings: Record<string, unknown>): Logger;
 }
 
 const REDACT_KEYS = new Set([
@@ -63,6 +66,20 @@ const redactFormat = winston.format((info) => {
   return deepRedact(info) as typeof info;
 });
 
+// Inject requestId, toolName, and appUserId from AsyncLocalStorage into every log entry.
+// appUserId is an app-level user identifier (not a secret) — safe to include in audit logs.
+// Raw trusted identity tokens and request headers are never injected.
+const requestContextFormat = winston.format((info) => {
+  const ctx = requestContextStorage.getStore();
+  if (ctx) {
+    const r = info as Record<string, unknown>;
+    if (!r['requestId']) r['requestId'] = ctx.requestId;
+    if (!r['toolName']) r['toolName'] = ctx.toolName;
+    if (!r['appUserId'] && ctx.appUserId) r['appUserId'] = ctx.appUserId;
+  }
+  return info;
+});
+
 export function createLogger(config: Pick<AppConfig, 'logLevel' | 'adoEnableDebugOutput' | 'logFile'>): Logger {
   const transports: winston.transport[] = [
     new winston.transports.Console({
@@ -77,15 +94,26 @@ export function createLogger(config: Pick<AppConfig, 'logLevel' | 'adoEnableDebu
     level: config.logLevel,
     format: winston.format.combine(
       pinoCompatSplat(),
+      requestContextFormat(),
       redactFormat(),
       winston.format.json(),
     ),
     transports,
   });
-  return inner as unknown as Logger;
+
+  const logger = inner as unknown as Logger;
+
+  // Attach child() so callers can create sub-loggers with fixed bindings.
+  (logger as unknown as Record<string, unknown>)['child'] = (bindings: Record<string, unknown>): Logger => {
+    return inner.child(bindings) as unknown as Logger;
+  };
+
+  return logger;
 }
 
 export function createSilentLogger(): Logger {
   const inner = winston.createLogger({ levels: LOG_LEVELS, silent: true, transports: [] });
-  return inner as unknown as Logger;
+  const logger = inner as unknown as Logger;
+  (logger as unknown as Record<string, unknown>)['child'] = (_bindings: Record<string, unknown>): Logger => logger;
+  return logger;
 }

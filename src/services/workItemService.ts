@@ -3,6 +3,7 @@ import type { AuthContext } from '../auth/authContext.js';
 import type { AppConfig } from '../config/config.js';
 import type { AdoWorkItem } from '../types/ado.js';
 import { processBatchesFlat } from '../utils/batching.js';
+import type { FieldDiscoveryService } from './fieldDiscoveryService.js';
 
 // 3 concurrent batch requests is safe for on-prem TFS rate limits. See docs/performance.md.
 const BATCH_CONCURRENCY = 3;
@@ -33,18 +34,29 @@ export interface FetchOptions {
 export class WorkItemService {
   constructor(
     private readonly workItemsClient: IWorkItemsClient,
-    private readonly config: AppConfig
+    private readonly config: AppConfig,
+    private readonly fieldDiscoveryService?: FieldDiscoveryService
   ) {}
 
   async fetchMany(ids: number[], auth: AuthContext, options: FetchOptions = {}, project?: string): Promise<AdoWorkItem[]> {
     if (ids.length === 0) return [];
+
+    let fields = options.fields;
+    if (fields && fields.length > 0 && this.fieldDiscoveryService) {
+      try {
+        const catalog = await this.fieldDiscoveryService.discover({ auth, project });
+        fields = fields.filter((f) => f.startsWith('System.') || catalog.has(f));
+      } catch (err) {
+        // Fall back to original fields if discovery is failing (silent recovery)
+      }
+    }
 
     const batchSize = Math.min(this.config.adoBatchSize, 200);
     return processBatchesFlat(
       ids,
       batchSize,
       BATCH_CONCURRENCY,
-      (batch) => this.workItemsClient.fetchBatch(batch, auth, options.fields, options.expand, project, options.allowEmptyResult)
+      (batch) => this.workItemsClient.fetchBatch(batch, auth, fields, options.expand, project, options.allowEmptyResult)
     );
   }
 

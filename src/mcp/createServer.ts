@@ -2,7 +2,7 @@ import { createRequire } from 'module';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AppConfig } from '../config/config.js';
 import type { Logger } from '../logging/logger.js';
-import { buildToolDeps, registerAllTools, type ToolDeps } from './tools/registerTools.js';
+import { buildToolDeps, registerAllTools, type ToolDeps, type P2Deps } from './tools/registerTools.js';
 import { rewriteDefinitionsToDefs } from './schemaCompat.js';
 
 const _require = createRequire(import.meta.url);
@@ -16,6 +16,7 @@ export interface CreateServerResult {
 
 export interface CreateServerOptions {
   applyMcpoSchemaCompat: boolean;
+  p2?: P2Deps;
 }
 
 export function createConfiguredMcpServer(
@@ -28,7 +29,7 @@ export function createConfiguredMcpServer(
     version: SERVER_VERSION,
   });
 
-  const deps = buildToolDeps(config, logger);
+  const deps = buildToolDeps(config, logger, opts.p2);
   registerAllTools(server, deps);
 
   if (opts.applyMcpoSchemaCompat) {

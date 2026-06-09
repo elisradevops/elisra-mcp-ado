@@ -18,7 +18,7 @@ function pickFields(fieldMap: Record<string, unknown>, keys: string[]): Record<s
 }
 
 export function registerWorkItemTools(server: McpServer, deps: ToolDeps): void {
-  const { config, logger, workItemService } = deps;
+  const { config, logger, workItemService, wrapTool } = deps;
 
   server.tool(
     'ado_get_work_items_by_ids',
@@ -39,7 +39,7 @@ export function registerWorkItemTools(server: McpServer, deps: ToolDeps): void {
       ),
       responseMode: z.enum(['overview', 'ids', 'items']).optional().default('items'),
     },
-    async ({ pat, project, ids, fields, expand, responseMode }) => {
+    wrapTool('ado_get_work_items_by_ids', async ({ pat, project, ids, fields, expand, responseMode }) => {
       const auth = resolveAuthContext(config, pat);
 
       try {
@@ -100,6 +100,5 @@ export function registerWorkItemTools(server: McpServer, deps: ToolDeps): void {
         logger.warn({ err }, 'ado_get_work_items_by_ids failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
       }
-    }
-  );
+    }));
 }

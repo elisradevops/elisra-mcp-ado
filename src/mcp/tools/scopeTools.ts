@@ -98,7 +98,7 @@ const ValidatedSourceSchema = SourceSchema.superRefine((v, ctx) => {
 });
 
 export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
-  const { config, logger, wiqlClient, workItemService, reviewScopeResolver, scopeSnapshotCache, metadataValidator } = deps;
+  const { config, logger, wiqlClient, workItemService, reviewScopeResolver, scopeSnapshotCache, metadataValidator, wrapTool } = deps;
 
   // ── ado_resolve_review_scope ────────────────────────────────────────────────
 
@@ -130,7 +130,7 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
         `IDs per page in "ids" mode. Default ${config.adoPageSizeDefault}, max ${config.adoPageSizeMax}.`
       ),
     },
-    async ({ pat, project, source, responseMode, cursor, pageSize }) => {
+    wrapTool('ado_resolve_review_scope', async ({ pat, project, source, responseMode, cursor, pageSize }) => {
       if (!cursor && !source) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: 'MISSING_SOURCE', message: 'source is required for the first call. Follow-up calls pass only {cursor, pat, project}.' }) }],
@@ -275,8 +275,7 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
         logger.warn({ err }, 'ado_resolve_review_scope failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
       }
-    }
-  );
+    }));
 
   // ── ado_query_work_item_ids ────────────────────────────────────────────────
 
@@ -290,7 +289,7 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
       wiql: z.string().describe('WIQL query string. Must SELECT [System.Id] FROM WorkItems.'),
       top: z.number().int().positive().optional().describe('Cap on results returned by ADO (default: no cap).'),
     },
-    async ({ pat, project, wiql, top }) => {
+    wrapTool('ado_query_work_item_ids', async ({ pat, project, wiql, top }) => {
       const auth = resolveAuthContext(config, pat);
 
       try {
@@ -312,8 +311,7 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
         logger.warn({ err }, 'ado_query_work_item_ids failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
       }
-    }
-  );
+    }));
 
   // ── ado_get_review_scope_overview ─────────────────────────────────────────
 
@@ -333,7 +331,7 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
         'Cap on work items to fetch for grouping.'
       ),
     },
-    async ({ pat, project, source, groupBy, maxItems }) => {
+    wrapTool('ado_get_review_scope_overview', async ({ pat, project, source, groupBy, maxItems }) => {
       const auth = resolveAuthContext(config, pat);
       const scope: ReviewScope = { project, auth, source };
 
@@ -366,6 +364,5 @@ export function registerScopeTools(server: McpServer, deps: ToolDeps): void {
         logger.warn({ err }, 'ado_get_review_scope_overview failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
       }
-    }
-  );
+    }));
 }
