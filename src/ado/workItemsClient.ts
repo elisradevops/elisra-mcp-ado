@@ -1,3 +1,4 @@
+import pLimit from 'p-limit';
 import type { AdoClient } from './adoClient.js';
 import type { AuthContext } from '../auth/authContext.js';
 import type { AppConfig } from '../config/config.js';
@@ -9,7 +10,7 @@ export type WorkItemExpand = 'none' | 'relations' | 'all';
 
 export interface IWorkItemsClient {
   fetchBatch(ids: number[], auth: AuthContext, fields?: string[], expand?: WorkItemExpand, project?: string, allowEmptyResult?: boolean): Promise<AdoWorkItem[]>;
-  fetchSingle(id: number, auth: AuthContext, expand?: WorkItemExpand, project?: string): Promise<AdoWorkItem>;
+  fetchSingle(id: number, auth: AuthContext, fields?: string[], expand?: WorkItemExpand, project?: string): Promise<AdoWorkItem>;
 }
 
 export class WorkItemsClient implements IWorkItemsClient {
@@ -57,13 +58,19 @@ export class WorkItemsClient implements IWorkItemsClient {
       if (fields && fields.length > 0) params['fields'] = fields.join(',');
       if (expand && expand !== 'none') params['$expand'] = expand;
 
-      const response = await this.client.request<AdoWorkItemsBatchResponse>({
-        method: 'GET',
-        url,
-        auth,
-        params,
-        apiVersionFallback: true,
-      });
+      let response;
+      try {
+        response = await this.client.request<AdoWorkItemsBatchResponse>({
+          method: 'GET',
+          url,
+          auth,
+          params,
+          apiVersionFallback: true,
+        });
+      } catch (err) {
+        this.logger?.warn({ err, idCount: ids.length }, 'fetchBatch: GET batch fetch failed. Falling back to parallel individual fetches.');
+        return this.fetchIndividualParallel(ids, auth, fields, expand, project);
+      }
       const result = response.value ?? [];
       if (result.length === 0 && ids.length > 0 && !allowEmptyResult) {
         throw new Error(`ADO returned 0 of ${ids.length} requested items — verify the project parameter matches the items' project and that the PAT has read access.`);
@@ -85,14 +92,20 @@ export class WorkItemsClient implements IWorkItemsClient {
       body['fields'] = fields;
     }
 
-    const response = await this.client.request<AdoWorkItemsBatchResponse>({
-      method: 'POST',
-      url,
-      auth,
-      params,
-      data: body,
-      apiVersionFallback: true,
-    });
+    let response;
+    try {
+      response = await this.client.request<AdoWorkItemsBatchResponse>({
+        method: 'POST',
+        url,
+        auth,
+        params,
+        data: body,
+        apiVersionFallback: true,
+      });
+    } catch (err) {
+      this.logger?.warn({ err, idCount: ids.length }, 'fetchBatch: POST workitemsbatch failed. Falling back to parallel individual fetches.');
+      return this.fetchIndividualParallel(ids, auth, fields, expand, project);
+    }
     const result = response.value ?? [];
     if (result.length === 0 && ids.length > 0 && !allowEmptyResult) {
       throw new Error(`ADO returned 0 of ${ids.length} requested items — verify the project parameter matches the items' project and that the PAT has read access.`);
@@ -100,7 +113,7 @@ export class WorkItemsClient implements IWorkItemsClient {
     return result;
   }
 
-  async fetchSingle(id: number, auth: AuthContext, expand?: WorkItemExpand, project?: string): Promise<AdoWorkItem> {
+  async fetchSingle(id: number, auth: AuthContext, fields?: string[], expand?: WorkItemExpand, project?: string): Promise<AdoWorkItem> {
     if (!project) this.logger?.warn({ id }, 'fetchSingle: no project — using org-scoped URL, may 404 on on-prem ADO Server');
     const url = project
       ? `${this.config.adoOrgUrl}/${encodeURIComponent(project)}/_apis/wit/workitems/${id}`
@@ -108,9 +121,34 @@ export class WorkItemsClient implements IWorkItemsClient {
     const params: Record<string, string | number> = {
       'api-version': this.config.adoApiVersion,
     };
+    if (fields && fields.length > 0) {
+      params['fields'] = fields.join(',');
+    }
     if (expand && expand !== 'none') {
       params['$expand'] = expand;
     }
     return this.client.request<AdoWorkItem>({ method: 'GET', url, auth, params, apiVersionFallback: true });
+  }
+
+  private async fetchIndividualParallel(
+    ids: number[],
+    auth: AuthContext,
+    fields?: string[],
+    expand?: WorkItemExpand,
+    project?: string
+  ): Promise<AdoWorkItem[]> {
+    const limit = pLimit(5); // 5 concurrent requests is safe and polite to on-prem TFS
+    const tasks = ids.map((id) =>
+      limit(async () => {
+        try {
+          return await this.fetchSingle(id, auth, fields, expand, project);
+        } catch (err) {
+          this.logger?.warn({ id, err }, 'fetchIndividualParallel: failed to fetch single item');
+          return null;
+        }
+      })
+    );
+    const results = await Promise.all(tasks);
+    return results.filter((item): item is AdoWorkItem => item !== null);
   }
 }

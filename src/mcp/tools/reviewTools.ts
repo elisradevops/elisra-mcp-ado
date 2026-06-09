@@ -20,6 +20,8 @@ import { parseWorkItemIdFromUrl } from '../../utils/adoUrl.js';
 import type { Logger } from '../../logging/logger.js';
 import { extractMetadataRefs } from '../../services/metadataValidator.js';
 import type { MetadataValidator } from '../../services/metadataValidator.js';
+import type { LinkTypeDiscoveryService } from '../../services/linkTypeDiscoveryService.js';
+import { resolveTraceabilityTokens } from '../../utils/traceabilityTokens.js';
 
 const CONTEXT_ONLY_NOTICE =
   'This tool returns Azure DevOps context only. ' +
@@ -85,24 +87,38 @@ async function resolveAvailableReviewFields(
   extras: readonly string[],
   logger: ToolDeps['logger'],
 ): Promise<ResolvedReviewFields> {
-  const requested = [...REVIEW_FIELDS, ...extras];
-  const deduped = [...new Set(requested.map((s) => s.trim()).filter(Boolean))];
   try {
     const catalog = await fieldDiscoveryService.discover({ auth, project });
-    const dropped: string[] = [];
-    const kept: string[] = [];
-    for (const ref of deduped) {
-      if (ref.startsWith('System.') || catalog.has(ref)) {
-        kept.push(ref);
-      } else {
-        dropped.push(ref);
+
+    let resolvedExtras: string[];
+    let dropped: string[] = [];
+
+    if (extras.length === 0) {
+      // No explicit list — discover all non-longtext custom fields from this server
+      resolvedExtras = [];
+      for (const [ref, info] of catalog.entries()) {
+        if (info.isCustom && !info.isLongText) resolvedExtras.push(ref);
+      }
+    } else {
+      // Explicit list — validate against catalog, drop unknown fields
+      resolvedExtras = [];
+      for (const ref of extras) {
+        if (ref.startsWith('System.') || catalog.has(ref)) {
+          resolvedExtras.push(ref);
+        } else {
+          dropped.push(ref);
+        }
       }
     }
-    return { fields: kept, dropped };
+
+    const requested = [...REVIEW_FIELDS, ...resolvedExtras];
+    const fields = [...new Set(requested.map((s) => s.trim()).filter(Boolean))];
+    return { fields, dropped };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    logger.warn({ err }, 'Field discovery unavailable; falling back to full requested set');
-    return { fields: deduped, dropped: [], discoveryError: message };
+    logger.warn({ err }, 'Field discovery unavailable; falling back to REVIEW_FIELDS only');
+    const fallback = [...new Set([...REVIEW_FIELDS, ...extras].map((s) => s.trim()).filter(Boolean))];
+    return { fields: fallback, dropped: [], discoveryError: message };
   }
 }
 
@@ -279,8 +295,12 @@ function extractHttpErrorMeta(err: unknown): { url: unknown; status: unknown; me
 
 export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
   const {
-    config, logger, reviewScopeResolver, workItemService, fieldDiscoveryService, scopeSnapshotCache, metadataValidator,
+    config, logger, reviewScopeResolver, workItemService, fieldDiscoveryService, linkTypeDiscoveryService, scopeSnapshotCache, metadataValidator, wrapTool,
   } = deps;
+
+  // Memoize resolved fields per paginated session — keyed by snapshotId + sorted extras.
+  // Avoids re-running catalog discovery on every cursor page for the same scope+fields.
+  const resolvedFieldsCache = new Map<string, ResolvedReviewFields>();
 
   // ── ado_review_work_items ──────────────────────────────────────────────────
 
@@ -314,11 +334,11 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       ),
       traceabilityLinkTokens: z.array(z.string()).optional().describe(
         'Substring tokens used to recognize traceability links on relation rel names. ' +
-        'Default: ADO_TRACEABILITY_LINK_TOKENS env (Affects, CoveredBy, TestedBy). ' +
+        'Default: auto-discovered from server (all work item link types). Override with ADO_TRACEABILITY_LINK_TOKENS env or pass explicit tokens here. ' +
         'Returned in fetchMetadata so the LLM knows which relation types to treat as traceability evidence.'
       ),
     },
-    async ({ pat, project, source, responseMode, cursor, pageSize, includeRelations, extraFields, traceabilityLinkTokens }) => {
+    wrapTool('ado_review_work_items', async ({ pat, project, source, responseMode, cursor, pageSize, includeRelations, extraFields, traceabilityLinkTokens }) => {
       if (!cursor && !source) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: 'MISSING_SOURCE', message: 'source is required for the first call. Follow-up calls pass only {cursor, pat, project}.' }) }],
@@ -347,7 +367,11 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       const scope: ReviewScope = { project, auth, source };
 
       try {
-        const traceTokens = traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens;
+        const traceTokens = traceabilityLinkTokens ?? (
+          config.adoTraceabilityLinkTokens.length > 0
+            ? config.adoTraceabilityLinkTokens
+            : await resolveTraceabilityTokens(linkTypeDiscoveryService, auth)
+        );
 
         // ── overview mode ────────────────────────────────────────────────────
         if (responseMode === 'overview') {
@@ -398,8 +422,12 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
 
         const pageIds = allIds.slice(offset, offset + effectivePageSize);
         const extras = [...config.adoReviewExtraFields, ...(extraFields ?? [])];
-        const { fields: reviewFields, dropped, discoveryError } =
-          await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
+        const _fieldsCacheKey = `${snapshotId}|${[...extras].sort().join(',')}`;
+        const { fields: reviewFields, dropped, discoveryError } = resolvedFieldsCache.get(_fieldsCacheKey) ?? await (async () => {
+          const result = await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
+          resolvedFieldsCache.set(_fieldsCacheKey, result);
+          return result;
+        })();
 
         const items = await workItemService.fetchMany(pageIds, auth, {
           fields: reviewFields,
@@ -452,8 +480,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         logger.warn({ err, url, status, method: typeof method === 'string' ? method.toUpperCase() : method, responseMode, sourceType: source?.type }, 'ado_review_work_items failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
       }
-    }
-  );
+    }));
 
   // ── ado_review_requirements ───────────────────────────────────────────────
 
@@ -489,11 +516,11 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       ),
       traceabilityLinkTokens: z.array(z.string()).optional().describe(
         'Substring tokens used to recognize traceability links on relation rel names. ' +
-        'Default: ADO_TRACEABILITY_LINK_TOKENS env (Affects, CoveredBy, TestedBy). ' +
+        'Default: auto-discovered from server (all work item link types). Override with ADO_TRACEABILITY_LINK_TOKENS env or pass explicit tokens here. ' +
         'Returned in fetchMetadata so the LLM knows which relation types to treat as traceability evidence.'
       ),
     },
-    async ({ pat, project, source, responseMode, cursor, pageSize, includeRelations, extraFields, traceabilityLinkTokens }) => {
+    wrapTool('ado_review_requirements', async ({ pat, project, source, responseMode, cursor, pageSize, includeRelations, extraFields, traceabilityLinkTokens }) => {
       if (!cursor && !source) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: 'MISSING_SOURCE', message: 'source is required for the first call. Follow-up calls pass only {cursor, pat, project}.' }) }],
@@ -522,7 +549,11 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
       const scope: ReviewScope = { project, auth, source, preset: 'requirement_quality' };
 
       try {
-        const traceTokens = traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens;
+        const traceTokens = traceabilityLinkTokens ?? (
+          config.adoTraceabilityLinkTokens.length > 0
+            ? config.adoTraceabilityLinkTokens
+            : await resolveTraceabilityTokens(linkTypeDiscoveryService, auth)
+        );
 
         // ── overview mode ────────────────────────────────────────────────────
         if (responseMode === 'overview') {
@@ -573,8 +604,12 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
 
         const pageIds = allIds.slice(offset, offset + effectivePageSize);
         const extras = [...config.adoReviewExtraFields, ...(extraFields ?? [])];
-        const { fields: reviewFields, dropped, discoveryError } =
-          await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
+        const _fieldsCacheKey = `${snapshotId}|${[...extras].sort().join(',')}`;
+        const { fields: reviewFields, dropped, discoveryError } = resolvedFieldsCache.get(_fieldsCacheKey) ?? await (async () => {
+          const result = await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
+          resolvedFieldsCache.set(_fieldsCacheKey, result);
+          return result;
+        })();
 
         const items = await workItemService.fetchMany(pageIds, auth, {
           fields: reviewFields,
@@ -627,8 +662,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         logger.warn({ err, url, status, method: typeof method === 'string' ? method.toUpperCase() : method, responseMode, sourceType: source?.type }, 'ado_review_requirements failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
       }
-    }
-  );
+    }));
 
   // ── ado_find_requirement_completeness_gaps ────────────────────────────────
 
@@ -663,7 +697,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         'Substring tokens used to recognize traceability links. Returned in fetchMetadata so the LLM knows which relation types to treat as traceability evidence.'
       ),
     },
-    async ({ pat, project, source, contextMode, groupField, cursor, pageSize, extraFields, traceabilityLinkTokens }) => {
+    wrapTool('ado_find_requirement_completeness_gaps', async ({ pat, project, source, contextMode, groupField, cursor, pageSize, extraFields, traceabilityLinkTokens }) => {
       if (!cursor && !source) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: 'MISSING_SOURCE', message: 'source is required for the first call. Follow-up calls pass only {cursor, pat, project}.' }) }],
@@ -706,8 +740,12 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           ...(extraFields ?? []),
           ...(groupField ? [groupField] : []),
         ];
-        const { fields: reviewFields, dropped, discoveryError } =
-          await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
+        const _fieldsCacheKey = `${snapshotId}|${[...extras].sort().join(',')}`;
+        const { fields: reviewFields, dropped, discoveryError } = resolvedFieldsCache.get(_fieldsCacheKey) ?? await (async () => {
+          const result = await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
+          resolvedFieldsCache.set(_fieldsCacheKey, result);
+          return result;
+        })();
 
         const items = await workItemService.fetchMany(pageIds, auth, {
           fields: reviewFields,
@@ -727,8 +765,8 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           }
           peerGroupIds = {};
           for (const group of byFieldValue.values()) {
-            for (const itemId of group) {
-              peerGroupIds[itemId] = group.filter((id) => id !== itemId);
+            for (let i = 0; i < group.length; i++) {
+              peerGroupIds[group[i]] = group.filter((_, j) => j !== i);
             }
           }
         }
@@ -738,7 +776,11 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           ? encodeCursor(snapshotId, nextOffset)
           : null;
 
-        const traceTokens = traceabilityLinkTokens ?? config.adoTraceabilityLinkTokens;
+        const traceTokens = traceabilityLinkTokens ?? (
+          config.adoTraceabilityLinkTokens.length > 0
+            ? config.adoTraceabilityLinkTokens
+            : await resolveTraceabilityTokens(linkTypeDiscoveryService, auth)
+        );
         const allWarnings: string[] = [
           ...scopeWarnings,
           ...(dropped.length ? [`Fields not found in collection and dropped: ${dropped.join(', ')}`] : []),
@@ -789,8 +831,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         logger.warn({ err, url, status, method: typeof method === 'string' ? method.toUpperCase() : method }, 'ado_find_requirement_completeness_gaps failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
       }
-    }
-  );
+    }));
 
   // ── ado_find_requirement_consistency_candidates ────────────────────────────
 
@@ -826,7 +867,7 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         'Merged with built-in context fields. Refs not present in the collection are dropped and reported in fetchMetadata.warnings.'
       ),
     },
-    async ({ pat, project, source, comparisonMode, comparisonField, maxGroupSize, cursor, pageSize, extraFields }) => {
+    wrapTool('ado_find_requirement_consistency_candidates', async ({ pat, project, source, comparisonMode, comparisonField, maxGroupSize, cursor, pageSize, extraFields }) => {
       if (!cursor && !source) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: 'MISSING_SOURCE', message: 'source is required for the first call. Follow-up calls pass only {cursor, pat, project}.' }) }],
@@ -868,8 +909,12 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
           ...(extraFields ?? []),
           ...(comparisonField ? [comparisonField] : []),
         ];
-        const { fields: reviewFields, dropped, discoveryError } =
-          await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
+        const _fieldsCacheKey = `${snapshotId}|${[...extras].sort().join(',')}`;
+        const { fields: reviewFields, dropped, discoveryError } = resolvedFieldsCache.get(_fieldsCacheKey) ?? await (async () => {
+          const result = await resolveAvailableReviewFields(fieldDiscoveryService, auth, project, extras, logger);
+          resolvedFieldsCache.set(_fieldsCacheKey, result);
+          return result;
+        })();
 
         const items = await workItemService.fetchMany(pageIds, auth, {
           fields: reviewFields,
@@ -944,6 +989,5 @@ export function registerReviewTools(server: McpServer, deps: ToolDeps): void {
         logger.warn({ err, url, status, method: typeof method === 'string' ? method.toUpperCase() : method }, 'ado_find_requirement_consistency_candidates failed');
         return { content: [{ type: 'text' as const, text: message }], isError: true };
       }
-    }
-  );
+    }));
 }

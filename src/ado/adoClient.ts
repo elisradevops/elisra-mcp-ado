@@ -108,7 +108,7 @@ function createAxiosInstance(config: AppConfig): AxiosInstance {
 }
 
 export interface AdoRequestOptions {
-  method: 'GET' | 'POST' | 'PATCH';
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   url: string;
   auth: AuthContext;
   params?: Record<string, string | number | boolean | undefined>;
@@ -134,6 +134,12 @@ export class AdoClient {
   }
 
   async request<T>(options: AdoRequestOptions): Promise<T> {
+    if (this.config.adoReadOnly && options.method !== 'GET') {
+      throw new Error(
+        `ADO_READ_ONLY=true: mutating request blocked (${options.method} ${options.url}). ` +
+        'Write operations are not supported in this release.'
+      );
+    }
     if (options.apiVersionFallback && options.params && 'api-version' in options.params) {
       return this.requestWithVersionFallback<T>(options);
     }

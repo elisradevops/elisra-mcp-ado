@@ -6,7 +6,7 @@ import { safeJsonStringify } from '../../utils/safeJson.js';
 import type { AdoDiscoverFieldsOutput } from '../../types/mcp.js';
 
 export function registerFieldTools(server: McpServer, deps: ToolDeps): void {
-  const { config, logger, fieldDiscoveryService } = deps;
+  const { config, logger, fieldDiscoveryService, wrapTool } = deps;
 
   server.tool(
     'ado_discover_fields',
@@ -20,7 +20,7 @@ export function registerFieldTools(server: McpServer, deps: ToolDeps): void {
       workItemType: z.string().optional().describe('Filter to fields used by this work item type (e.g. "Requirement", "Bug").'),
       refresh: z.boolean().optional().default(false).describe('Force cache invalidation and re-fetch from ADO.'),
     },
-    async ({ pat, project, workItemType, refresh }) => {
+    wrapTool('ado_discover_fields', async ({ pat, project, workItemType, refresh }) => {
       const auth = resolveAuthContext(config, pat);
       const warnings: string[] = [];
 
@@ -104,6 +104,5 @@ export function registerFieldTools(server: McpServer, deps: ToolDeps): void {
         };
         return { content: [{ type: 'text' as const, text: safeJsonStringify(out, 2) }], isError: true };
       }
-    }
-  );
+    }));
 }

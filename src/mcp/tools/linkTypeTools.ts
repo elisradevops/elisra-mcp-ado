@@ -5,7 +5,7 @@ import { resolveAuthContext } from '../../auth/authContext.js';
 import { safeJsonStringify } from '../../utils/safeJson.js';
 
 export function registerLinkTypeTools(server: McpServer, deps: ToolDeps): void {
-  const { config, logger, linkTypeDiscoveryService } = deps;
+  const { config, logger, linkTypeDiscoveryService, wrapTool } = deps;
 
   server.tool(
     'ado_discover_link_types',
@@ -24,7 +24,7 @@ export function registerLinkTypeTools(server: McpServer, deps: ToolDeps): void {
         'Force cache invalidation and re-fetch from ADO.'
       ),
     },
-    async ({ pat, includeAll, refresh }) => {
+    wrapTool('ado_discover_link_types', async ({ pat, includeAll, refresh }) => {
       const auth = resolveAuthContext(config, pat);
 
       try {
@@ -37,6 +37,5 @@ export function registerLinkTypeTools(server: McpServer, deps: ToolDeps): void {
         const out = linkTypeDiscoveryService.buildSeedFallback(message, includeAll ?? false);
         return { content: [{ type: 'text' as const, text: safeJsonStringify(out, 2) }], isError: true };
       }
-    }
-  );
+    }));
 }

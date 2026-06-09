@@ -88,6 +88,19 @@ describe('WorkItemService.fetchMany', () => {
     await svc.fetchMany([1], mockAuth, { expand: 'relations' });
     expect(client.fetchBatch).toHaveBeenCalledWith([1], mockAuth, undefined, 'relations', undefined, undefined);
   });
+
+  it('filters out non-existent fields via FieldDiscoveryService', async () => {
+    const client = makeClient([makeItem(1)]);
+    const fakeDiscovery = {
+      discover: vi.fn().mockResolvedValue(new Map([['Custom.ExistingField', {}]])),
+    } as any;
+    const svc = new WorkItemService(client, baseConfig, fakeDiscovery);
+    await svc.fetchMany([1], mockAuth, { fields: ['System.Id', 'Custom.ExistingField', 'Custom.NonExistentField'] });
+    expect(client.fetchBatch).toHaveBeenCalledWith(
+      [1], mockAuth, ['System.Id', 'Custom.ExistingField'], undefined, undefined, undefined
+    );
+    expect(fakeDiscovery.discover).toHaveBeenCalledWith({ auth: mockAuth, project: undefined });
+  });
 });
 
 describe('WorkItemService.fetchCompact', () => {

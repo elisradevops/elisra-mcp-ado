@@ -17,7 +17,7 @@ function flattenPaths(node: AdoClassificationNode, paths: string[] = []): string
 }
 
 export function registerAreaTools(server: McpServer, deps: ToolDeps): void {
-  const { config, logger, areaNodesClient } = deps;
+  const { config, logger, areaNodesClient, wrapTool } = deps;
 
   server.tool(
     'ado_get_area_tree',
@@ -30,7 +30,7 @@ export function registerAreaTools(server: McpServer, deps: ToolDeps): void {
       project: z.string().optional().describe('Project name. Required — org-scoped area queries 404 on on-prem TFS.'),
       depth: z.number().int().min(1).max(20).optional().default(10).describe('Tree depth (default 10).'),
     },
-    async ({ pat, project, depth }) => {
+    wrapTool('ado_get_area_tree', async ({ pat, project, depth }) => {
       if (!project) {
         const out: AdoGetAreaTreeOutput = {
           project: '',
@@ -72,6 +72,5 @@ export function registerAreaTools(server: McpServer, deps: ToolDeps): void {
         };
         return { content: [{ type: 'text' as const, text: safeJsonStringify(out, 2) }], isError: true };
       }
-    }
-  );
+    }));
 }

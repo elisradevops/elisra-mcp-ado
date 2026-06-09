@@ -80,9 +80,9 @@ services:
       ADO_FULL_RESPONSE_MAX_ITEMS: ${ADO_FULL_RESPONSE_MAX_ITEMS:-50}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS:-}
-      MCPO_API_KEY: ${MCPO_API_KEY:-changeme}
+      MCPO_API_KEY: ${MCPO_API_KEY:?MCPO_API_KEY is required — set a securely generated token (>=16 chars) in .env}
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS -H \"Authorization: Bearer ${MCPO_API_KEY:-changeme}\" http://127.0.0.1:8000/openapi.json"]
+      test: ["CMD-SHELL", "curl -fsS -H \"Authorization: Bearer ${MCPO_API_KEY}\" http://127.0.0.1:8000/openapi.json"]
       interval: 30s
       timeout: 5s
       start_period: 20s

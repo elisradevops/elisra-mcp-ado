@@ -3,6 +3,7 @@ import { FakeMcpServer, parseToolText } from '../helpers/fakeMcpServer.js';
 import { registerAreaTools } from '../../src/mcp/tools/areaTools.js';
 import type { ToolDeps } from '../../src/mcp/tools/registerTools.js';
 import { createSilentLogger } from '../../src/logging/logger.js';
+import { createWrapTool } from '../../src/mcp/tools/toolHelpers.js';
 import type { AppConfig } from '../../src/config/config.js';
 
 const baseConfig = {
@@ -13,9 +14,11 @@ const baseConfig = {
 } as AppConfig;
 
 function makeDeps(areaNodesClientMock: { getAreaTree: ReturnType<typeof vi.fn> }): ToolDeps {
+  const logger = createSilentLogger();
   return {
     config: baseConfig,
-    logger: createSilentLogger(),
+    logger,
+    wrapTool: createWrapTool(logger),
     adoClient: null as never,
     projectsClient: null as never,
     areaNodesClient: areaNodesClientMock as never,

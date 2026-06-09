@@ -11,7 +11,7 @@ import { FilterNodeSchema } from '../../domain/fieldFilter.js';
  * These tools are intentionally not listed in the public tool surface.
  */
 export function registerDebugTools(server: McpServer, deps: ToolDeps): void {
-  const { config } = deps;
+  const { config, wrapTool } = deps;
 
   if (!config.adoEnableDebugOutput) return;
 
@@ -32,7 +32,7 @@ export function registerDebugTools(server: McpServer, deps: ToolDeps): void {
       })).optional().describe('ORDER BY clause.'),
       asOf: z.string().optional().describe('ASOF clause — ISO date (2025-01-01) or WIQL macro (@Today - 7d).'),
     },
-    ({ project, filters, filterTree, orderBy, asOf }) => {
+    wrapTool('ado_debug_compile_wiql', ({ project, filters, filterTree, orderBy, asOf }) => {
       try {
         const compiler = createDefaultCompiler(config.adoAllowUnknownFields, config.adoApiVersion);
         const { wiql, warnings } = compiler.compile({ project, filters, filterTree, orderBy, asOf });
@@ -47,6 +47,5 @@ export function registerDebugTools(server: McpServer, deps: ToolDeps): void {
         const message = err instanceof Error ? err.message : String(err);
         return Promise.resolve({ content: [{ type: 'text' as const, text: message }], isError: true });
       }
-    }
-  );
+    }));
 }

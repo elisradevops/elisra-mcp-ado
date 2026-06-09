@@ -73,6 +73,16 @@ export function buildSimulationDeps(opts: SimulationDepsOptions): {
         }).filter((i): i is AdoWorkItem => i !== null);
       }
     ),
+    fetchSingle: vi.fn().mockImplementation(
+      async (id: number, _auth: unknown, _fields: unknown, expand: string | undefined) => {
+        const item = opts.itemMap.get(id);
+        if (!item) throw new Error(`Item ${id} not found`);
+        if (!expand || expand !== 'relations') {
+          return { ...item, relations: undefined };
+        }
+        return item;
+      }
+    ),
   };
 
   const workItemService = new WorkItemService(fakeClient, config);
